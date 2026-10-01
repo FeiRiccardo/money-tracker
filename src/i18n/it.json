@@ -1,5 +1,9 @@
 {
-  "app": { "name": "Money Tracker" },
+  "app": {
+    "name": "Money Tracker",
+    "updating": "Completo l'aggiornamento",
+    "updatingBody": "Chiudi Money Tracker in ogni altra scheda o finestra, poi proseguirà da solo."
+  },
   "common": {
     "cancel": "Annulla",
     "save": "Salva",
@@ -38,7 +42,9 @@
     "emptyNone": "Ancora niente. Tocca + per aggiungere la tua prima spesa o entrata.",
     "emptyMonth": "Nessuna transazione questo mese. Tocca + per aggiungerne una.",
     "emptySummary": "Aggiungi una transazione per vedere il riepilogo del mese.",
-    "retiredTag": "eliminata"
+    "retiredTag": "eliminata",
+    "search": "Cerca",
+    "sort": "Ordina"
   },
   "summary": {
     "income": "Entrate",
@@ -66,7 +72,10 @@
     "saveChanges": "Salva modifiche",
     "deleted": "Transazione eliminata",
     "saveFailedTitle": "Non salvato",
-    "saveFailedBody": "Non è stato possibile salvare questa modifica su questo dispositivo. Fai subito un backup per non perdere i dati."
+    "saveFailedBody": "Non è stato possibile salvare questa modifica su questo dispositivo. Fai subito un backup per non perdere i dati.",
+    "duplicate": "Duplica",
+    "recent": "Recenti",
+    "recentHelp": "Tocca per copiare"
   },
   "categories": {
     "title": "Categorie",
@@ -122,7 +131,9 @@
     "eraseExportFirst": "Esporta prima",
     "eraseConfirm": "Cancella tutto",
     "privacy": "I tuoi dati restano su questo dispositivo.",
-    "version": "Versione {{version}}"
+    "version": "Versione {{version}}",
+    "recurring": "Ricorrenti",
+    "recurringHelp": "Affitto, stipendio, abbonamenti e altre transazioni che si ripetono."
   },
   "banner": {
     "backupTitle_one": "{{count}} modifica non salvata nel backup",
@@ -145,7 +156,7 @@
   "import": {
     "title": "Importa un backup",
     "chooseFiles": "Scegli i due file di backup",
-    "chooseHelp": "Seleziona insieme il CSV delle transazioni e quello delle categorie.",
+    "chooseHelp": "Seleziona insieme i file delle transazioni e delle categorie. Il file delle ricorrenti è facoltativo.",
     "needBoth": "Seleziona entrambi i file: uno con le transazioni e uno con le categorie.",
     "unreadable": "Non è stato possibile leggere un file.",
     "previewTitle": "Pronto per l'importazione",
@@ -165,17 +176,85 @@
       "invalidAmount": "l'importo deve essere maggiore di zero con al massimo 2 decimali",
       "noCategories": "nessuna categoria indicata",
       "invalidName": "il nome della categoria non è valido",
-      "duplicateName": "il nome della categoria è duplicato"
+      "duplicateName": "il nome della categoria è duplicato",
+      "invalidFrequency": "la frequenza deve essere weekly, monthly o yearly",
+      "invalidDateRange": "la data di fine è prima della data di inizio"
     },
     "fatal": {
       "transactionsColumns": "Il file delle transazioni non ha le colonne previste (date, type, amount, categories, note).",
-      "categoriesColumns": "Il file delle categorie non ha le colonne previste (type, name, default_key)."
+      "categoriesColumns": "Il file delle categorie non ha le colonne previste (type, name, default_key).",
+      "recurringColumns": "Il file delle ricorrenti non ha le colonne previste (type, amount, categories, note, frequency, start_date, end_date, next_date)."
     },
     "openingCheckTitle": "Controlla il saldo iniziale",
-    "openingCheckBody": "Il saldo iniziale non è nei file di backup, quindi controllalo."
+    "openingCheckBody": "Il saldo iniziale non è nei file di backup, quindi controllalo.",
+    "fileRecurring": "Ricorrenti",
+    "rulesToImport_one": "Verrà ripristinata anche {{count}} regola ricorrente.",
+    "rulesToImport_many": "Verranno ripristinate anche {{count}} regole ricorrenti.",
+    "rulesToImport_other": "Verranno ripristinate anche {{count}} regole ricorrenti."
   },
   "export": {
     "shareTitle": "Backup di Money Tracker",
     "done": "Backup salvato. Conserva i file fuori dal browser."
+  },
+  "sort": {
+    "label": "Ordina",
+    "newest": "Prima le più recenti",
+    "oldest": "Prima le più vecchie",
+    "largest": "Importo più grande",
+    "smallest": "Importo più piccolo"
+  },
+  "search": {
+    "title": "Cerca",
+    "placeholder": "Cerca note, categorie, importi",
+    "type": "Tipo",
+    "all": "Tutte",
+    "expenses": "Uscite",
+    "income": "Entrate",
+    "categories": "Categorie",
+    "anyCategory": "Qualsiasi categoria",
+    "selectedCategories_one": "{{count}} categoria",
+    "selectedCategories_many": "{{count}} categorie",
+    "selectedCategories_other": "{{count}} categorie",
+    "chooseCategories": "Scegli le categorie",
+    "expenseCategories": "Categorie di uscita",
+    "incomeCategories": "Categorie di entrata",
+    "date": "Data",
+    "thisMonth": "Questo mese",
+    "lastMonth": "Mese scorso",
+    "thisYear": "Quest'anno",
+    "allTime": "Sempre",
+    "custom": "Personalizzato",
+    "from": "Dal",
+    "to": "Al",
+    "count_one": "{{count}} transazione",
+    "count_many": "{{count}} transazioni",
+    "count_other": "{{count}} transazioni",
+    "net": "netto {{amount}}",
+    "empty": "Nessuna transazione corrisponde.",
+    "clear": "Azzera i filtri",
+    "done": "Fatto"
+  },
+  "recurring": {
+    "title": "Ricorrenti",
+    "added_one": "{{count}} transazione ricorrente aggiunta",
+    "added_many": "{{count}} transazioni ricorrenti aggiunte",
+    "added_other": "{{count}} transazioni ricorrenti aggiunte",
+    "empty": "Ancora nessuna transazione ricorrente. Attiva Ripeti quando ne aggiungi una.",
+    "repeat": "Ripeti",
+    "never": "Mai",
+    "weekly": "Ogni settimana",
+    "monthly": "Ogni mese",
+    "yearly": "Ogni anno",
+    "endDate": "Termina il (facoltativo)",
+    "repeats": "↻ Si ripete: {{frequency}}",
+    "editRule": "Modifica regola",
+    "stopRepeating": "Smetti di ripetere",
+    "stopTitle": "Smettere di ripetere?",
+    "stopBody": "Non verranno create altre transazioni. Quelle già create restano.",
+    "next": "Prossima: {{date}}",
+    "ended": "Terminata",
+    "ruleTitle": "Transazione ricorrente",
+    "ruleHelp": "Le modifiche valgono solo per le transazioni future.",
+    "mark": "Ricorrente"
   }
 }

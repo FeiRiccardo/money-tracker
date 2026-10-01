@@ -24,6 +24,10 @@ _Avoid_: Tag, bucket, label, sub-category
 The frozen name of a deleted Category, kept as plain text on the Transactions that had it. It is not a Category: it is never offered when entering a new Transaction, and it still counts in the monthly summary.
 _Avoid_: Deleted category, archived category, orphan
 
+**Recurring rule**:
+A weekly, monthly or yearly schedule that creates Transactions automatically when the app opens. A Transaction it created is an ordinary Transaction with a ↻ mark.
+_Avoid_: Subscription, standing order, scheduled transaction
+
 **Balance**:
 The all-time total of the user's money: the Opening balance plus all Income minus all Expenses.
 _Avoid_: Total, net worth, account balance

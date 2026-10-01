@@ -194,3 +194,147 @@ describe('previewImport: Categories validation', () => {
     expect(preview.fatal).toBe('categoriesColumns');
   });
 });
+
+describe('exportBackup: recurring.csv', () => {
+  const rule = {
+    id: 'r1',
+    type: 'expense' as const,
+    cents: 72000,
+    categoryIds: ['groceries'],
+    retired: ['Gym'],
+    note: 'Rent, flat 3',
+    frequency: 'monthly' as const,
+    startDate: '2026-01-31',
+    endDate: null,
+    nextDate: '2026-05-31',
+  };
+
+  it('is not written at all when there are no rules', () => {
+    expect(exportBackup(sample, nameOf, []).recurringCsv).toBeNull();
+    expect(exportBackup(sample, nameOf).recurringCsv).toBeNull();
+  });
+
+  it('lists each rule with its schedule and next date, Categories separated by |', () => {
+    const { recurringCsv } = exportBackup(sample, nameOf, [rule, { ...rule, id: 'r2', type: 'income', cents: 5000, categoryIds: ['salary'], retired: [], note: '', frequency: 'weekly', startDate: '2026-02-01', endDate: '2026-12-31', nextDate: '2026-10-25' }]);
+
+    expect(recurringCsv).toBe(
+      BOM +
+        'type,amount,categories,note,frequency,start_date,end_date,next_date\r\n' +
+        'expense,720.00,Groceries|Gym,"Rent, flat 3",monthly,2026-01-31,,2026-05-31\r\n' +
+        'income,50.00,Salary,,weekly,2026-02-01,2026-12-31,2026-10-25\r\n',
+    );
+  });
+});
+
+describe('exportBackup: order', () => {
+  it('lists Transactions by date, and within a day by when they were recorded', () => {
+    const data: LedgerData = {
+      categories: [cat('c', 'expense', 'Food')],
+      transactions: [
+        { ...tx('2026-10-18', 'expense', 100, ['c'], [], 'second'), createdAt: 20 },
+        { ...tx('2026-10-01', 'expense', 100, ['c'], [], 'first'), createdAt: 99 },
+        { ...tx('2026-10-18', 'expense', 100, ['c'], [], 'earlier same day'), createdAt: 10 },
+      ],
+    };
+
+    const notes = exportBackup(data, nameOf).transactionsCsv.split('\r\n').slice(1, 4).map((l) => l.split(',').pop());
+
+    expect(notes).toEqual(['first', 'earlier same day', 'second']);
+  });
+});
+
+describe('previewImport: recurring rules', () => {
+  const rules = [
+    {
+      id: 'r1', type: 'expense' as const, cents: 72000, categoryIds: ['groceries'], retired: ['Gym'],
+      note: 'Rent, flat 3', frequency: 'monthly' as const, startDate: '2026-01-31', endDate: null, nextDate: '2026-05-31',
+    },
+    {
+      id: 'r2', type: 'income' as const, cents: 5000, categoryIds: ['salary'], retired: [],
+      note: '', frequency: 'weekly' as const, startDate: '2026-02-01', endDate: '2026-12-31', nextDate: '2026-10-25',
+    },
+  ];
+
+  it('round-trips the rules, mapping Categories by name and keeping Retired labels', () => {
+    const files = exportBackup(sample, nameOf, rules);
+
+    const preview = previewImport(files, seqId);
+
+    expect(preview.errors).toEqual([]);
+    const byId = new Map(preview.data.categories.map((c) => [c.id, c.name]));
+    expect(
+      preview.rules.map((r) => ({
+        type: r.type, cents: r.cents, note: r.note, frequency: r.frequency, startDate: r.startDate,
+        endDate: r.endDate, nextDate: r.nextDate, categories: r.categoryIds.map((id) => byId.get(id)), retired: r.retired,
+      })),
+    ).toEqual([
+      { type: 'expense', cents: 72000, note: 'Rent, flat 3', frequency: 'monthly', startDate: '2026-01-31', endDate: null, nextDate: '2026-05-31', categories: ['Groceries'], retired: ['Gym'] },
+      { type: 'income', cents: 5000, note: '', frequency: 'weekly', startDate: '2026-02-01', endDate: '2026-12-31', nextDate: '2026-10-25', categories: ['Salary'], retired: [] },
+    ]);
+  });
+
+  it('works without the recurring file: no rules', () => {
+    const { transactionsCsv, categoriesCsv } = exportBackup(sample, nameOf);
+
+    expect(previewImport({ transactionsCsv, categoriesCsv }, seqId).rules).toEqual([]);
+  });
+});
+
+describe('previewImport: order', () => {
+  it('gives imported Transactions increasing recorded-at values in file order, so a same-day order survives', () => {
+    const preview = previewImport(
+      {
+        transactionsCsv: 'date,type,amount,categories,note\r\n2026-10-18,expense,1.00,Food,first\r\n2026-10-18,expense,2.00,Food,second\r\n',
+        categoriesCsv: 'type,name,default_key\r\nexpense,Food,\r\n',
+      },
+      seqId,
+    );
+
+    const [first, second] = preview.data.transactions;
+    expect(second!.createdAt!).toBeGreaterThan(first!.createdAt!);
+  });
+});
+
+describe('previewImport: recurring validation', () => {
+  const base = { categoriesCsv: 'type,name,default_key\r\nexpense,Food,\r\nincome,Pay,\r\n', transactionsCsv: 'date,type,amount,categories,note\r\n' };
+  const HEADER = 'type,amount,categories,note,frequency,start_date,end_date,next_date\r\n';
+  const run = (rows: string) => previewImport({ ...base, recurringCsv: HEADER + rows }, seqId);
+
+  it('skips bad rows with a row number and a reason, and keeps the good ones', () => {
+    const preview = run(
+      'expense,10.00,Food,ok,monthly,2026-01-15,,2026-02-15\r\n' + // row 2: valid
+        'spend,10.00,Food,,monthly,2026-01-15,,2026-02-15\r\n' + // row 3: bad type
+        'expense,0,Food,,monthly,2026-01-15,,2026-02-15\r\n' + // row 4: bad amount
+        'expense,10.00,,,monthly,2026-01-15,,2026-02-15\r\n' + // row 5: no categories
+        'expense,10.00,Food,,daily,2026-01-15,,2026-02-15\r\n' + // row 6: bad frequency
+        'expense,10.00,Food,,monthly,2026-13-40,,2026-02-15\r\n' + // row 7: bad start date
+        'expense,10.00,Food,,monthly,2026-01-15,not-a-date,2026-02-15\r\n' + // row 8: bad end date
+        'expense,10.00,Food,,monthly,2026-01-15,2025-12-31,2026-02-15\r\n', // row 9: ends before it starts
+    );
+
+    expect(preview.rules.map((r) => r.note)).toEqual(['ok']);
+    expect(preview.errors).toEqual([
+      { file: 'recurring', row: 3, reason: 'invalidType' },
+      { file: 'recurring', row: 4, reason: 'invalidAmount' },
+      { file: 'recurring', row: 5, reason: 'noCategories' },
+      { file: 'recurring', row: 6, reason: 'invalidFrequency' },
+      { file: 'recurring', row: 7, reason: 'invalidDate' },
+      { file: 'recurring', row: 8, reason: 'invalidDate' },
+      { file: 'recurring', row: 9, reason: 'invalidDateRange' },
+    ]);
+  });
+
+  it('treats a blank next_date as the start date', () => {
+    const preview = run('expense,10.00,Food,,weekly,2026-03-02,,\r\n');
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.rules[0]!.nextDate).toBe('2026-03-02');
+  });
+
+  it('rejects a recurring file whose header is not the expected columns', () => {
+    const preview = previewImport({ ...base, recurringCsv: 'a,b\r\n1,2\r\n' }, seqId);
+
+    expect(preview.fatal).toBe('recurringColumns');
+    expect(preview.rules).toEqual([]);
+  });
+});

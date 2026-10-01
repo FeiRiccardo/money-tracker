@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
+import { openDB } from 'idb';
 import { openLedger } from './ledger';
 import { DEFAULT_SETTINGS } from '../domain/types';
 
@@ -104,6 +105,7 @@ describe('editing and deleting a Transaction', () => {
 
     expect(updated).toEqual({
       id: saved.id, date: '2026-10-18', type: 'expense', cents: 7000, categoryIds: [shopping.id], retired: ['Gym'], note: 'New pan',
+      createdAt: saved.createdAt, // an edit does not change when it was first recorded
     });
     expect(data.transactions).toEqual([updated]);
     expect(settings.changesSinceBackup).toBe(2);
@@ -261,5 +263,290 @@ describe('replacing and erasing everything', () => {
 
     expect(data).toEqual({ categories: [], transactions: [] });
     expect(settings).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe('upgrading a database written by the first version', () => {
+  it('keeps every Transaction and setting, and adds an empty list of recurring rules', async () => {
+    const name = freshName();
+    // Exactly the schema the live app created in version 1.
+    const old = await openDB(name, 1, {
+      upgrade(database) {
+        database.createObjectStore('categories', { keyPath: 'id' });
+        database.createObjectStore('transactions', { keyPath: 'id' });
+        database.createObjectStore('meta');
+      },
+    });
+    const legacy = { id: 't1', date: '2026-10-01', type: 'expense', cents: 100, categoryIds: [], retired: ['Gym'], note: 'old' };
+    await old.put('transactions', legacy);
+    await old.put('meta', { language: 'it', openingCents: 500, onboarded: true }, 'settings');
+    old.close();
+
+    const ledger = await openLedger(name, nameOf);
+    const { data, rules, settings } = await ledger.load();
+
+    expect(data.transactions).toEqual([legacy]);
+    expect(rules).toEqual([]);
+    expect(settings).toEqual(expect.objectContaining({ language: 'it', openingCents: 500, onboarded: true, sortOrder: 'newest' }));
+  });
+});
+
+describe('when a Transaction was recorded', () => {
+  it('stamps each new Transaction later than every earlier one, even within the same millisecond', async () => {
+    const { ledger, groceries } = await ledgerWithOneTransaction();
+    const input = { date: '2026-10-17', type: 'expense' as const, cents: 100, categoryIds: [groceries.id], retired: [], note: '' };
+
+    const a = await ledger.addTransaction(input);
+    const b = await ledger.addTransaction(input);
+    const c = await ledger.addTransaction(input);
+
+    expect(a.createdAt).toEqual(expect.any(Number));
+    expect(b.createdAt!).toBeGreaterThan(a.createdAt!);
+    expect(c.createdAt!).toBeGreaterThan(b.createdAt!);
+  });
+
+  it('is kept, with the link to a recurring rule, when the Transaction is edited', async () => {
+    const { ledger, groceries } = await ledgerWithOneTransaction();
+    const saved = await ledger.addTransaction({
+      date: '2026-10-17', type: 'expense', cents: 100, categoryIds: [groceries.id], retired: [], note: '', ruleId: 'rule-1',
+    });
+
+    const edited = await ledger.updateTransaction(saved.id, {
+      date: '2026-10-18', type: 'expense', cents: 250, categoryIds: [groceries.id], retired: [], note: 'changed',
+    });
+
+    expect(edited.createdAt).toBe(saved.createdAt);
+    expect(edited.ruleId).toBe('rule-1');
+    expect(edited.cents).toBe(250);
+  });
+});
+
+async function ledgerWithRule(over: Record<string, unknown> = {}) {
+  const base = await ledgerWithOneTransaction();
+  const rule = await base.ledger.addRule({
+    type: 'expense', cents: 72000, categoryIds: [base.groceries.id], retired: [], note: 'Rent',
+    frequency: 'monthly', startDate: '2026-01-31', endDate: null, nextDate: '2026-01-31', ...over,
+  });
+  return { ...base, rule };
+}
+
+describe('recurring rules', () => {
+  it('addRule stores the rule with its own id and counts a change', async () => {
+    const { ledger, rule } = await ledgerWithRule();
+    const { rules, settings } = await ledger.load();
+
+    expect(rule.id).toEqual(expect.any(String));
+    expect(rules).toEqual([rule]);
+    expect(settings.changesSinceBackup).toBe(2); // the first Transaction, then the rule
+  });
+
+  it('updateRule changes the rule but keeps its id', async () => {
+    const { ledger, rule } = await ledgerWithRule();
+
+    const updated = await ledger.updateRule(rule.id, {
+      type: 'expense', cents: 75000, categoryIds: rule.categoryIds, retired: [], note: 'Rent (new price)',
+      frequency: 'monthly', startDate: rule.startDate, endDate: '2026-12-31', nextDate: rule.nextDate,
+    });
+
+    expect(updated).toEqual({ ...rule, cents: 75000, note: 'Rent (new price)', endDate: '2026-12-31' });
+    expect((await ledger.load()).rules).toEqual([updated]);
+  });
+
+  it('deleteRule stops the rule but keeps its Transactions, now without the link to it', async () => {
+    const { ledger, rule, groceries } = await ledgerWithRule();
+    const made = await ledger.addTransaction({
+      date: '2026-01-31', type: 'expense', cents: 72000, categoryIds: [groceries.id], retired: [], note: 'Rent', ruleId: rule.id,
+    });
+
+    await ledger.deleteRule(rule.id);
+    const { rules, data } = await ledger.load();
+
+    expect(rules).toEqual([]);
+    const kept = data.transactions.find((t) => t.id === made.id)!;
+    expect(kept.note).toBe('Rent');
+    expect(kept.ruleId).toBeUndefined();
+  });
+});
+
+describe('creating the Transactions a rule has made due', () => {
+  it('back-fills every missed occurrence as an ordinary Transaction linked to the rule, and moves the rule on', async () => {
+    const { ledger, rule, groceries } = await ledgerWithRule({ startDate: '2026-01-31', nextDate: '2026-01-31' });
+
+    const { created } = await ledger.materializeRules('2026-04-15');
+    const { data, rules, settings } = await ledger.load();
+
+    expect(created.map((t) => t.date)).toEqual(['2026-01-31', '2026-02-28', '2026-03-31']);
+    expect(created.every((t) => t.ruleId === rule.id && t.note === 'Rent' && t.cents === 72000)).toBe(true);
+    expect(created.every((t) => t.categoryIds.join() === groceries.id)).toBe(true);
+    expect(created[1]!.createdAt!).toBeGreaterThan(created[0]!.createdAt!);
+    expect(data.transactions.filter((t) => t.ruleId === rule.id)).toHaveLength(3);
+    expect(rules[0]!.nextDate).toBe('2026-04-30');
+    expect(settings.changesSinceBackup).toBe(2 + 3);
+  });
+
+  it('creates nothing the second time on the same day, and nothing when no rule is due', async () => {
+    const { ledger } = await ledgerWithRule({ startDate: '2026-01-31', nextDate: '2026-01-31' });
+    await ledger.materializeRules('2026-04-15');
+
+    const again = await ledger.materializeRules('2026-04-15');
+
+    expect(again.created).toEqual([]);
+    const empty = await openLedger(freshName(), nameOf);
+    expect((await empty.materializeRules('2026-04-15')).created).toEqual([]);
+  });
+});
+
+describe('undoing a batch of generated Transactions', () => {
+  it('removes exactly what was created, puts the rule back where it was, and restores the change count', async () => {
+    const { ledger } = await ledgerWithRule({ startDate: '2026-01-31', nextDate: '2026-01-31' });
+    const before = await ledger.load();
+
+    const batch = await ledger.materializeRules('2026-04-15');
+    await ledger.undoMaterialize(batch);
+    const after = await ledger.load();
+
+    expect(after.data.transactions).toEqual(before.data.transactions);
+    expect(after.rules).toEqual(before.rules);
+    expect(after.settings.changesSinceBackup).toBe(before.settings.changesSinceBackup);
+  });
+
+  it('leaves Transactions the user added meanwhile alone', async () => {
+    const { ledger, groceries } = await ledgerWithRule({ startDate: '2026-03-01', nextDate: '2026-03-01' });
+    const batch = await ledger.materializeRules('2026-03-10');
+    const mine = await ledger.addTransaction({
+      date: '2026-03-05', type: 'expense', cents: 100, categoryIds: [groceries.id], retired: [], note: 'mine',
+    });
+
+    await ledger.undoMaterialize(batch);
+
+    expect((await ledger.load()).data.transactions.map((t) => t.id)).toContain(mine.id);
+  });
+});
+
+describe('making a Transaction repeat', () => {
+  it('turns it into the first occurrence of a new rule, without duplicating it', async () => {
+    const { ledger, saved } = await ledgerWithOneTransaction(); // 2026-10-17, 62.30, Groceries, "Weekly shop"
+
+    const rule = await ledger.createRuleFromTransaction(saved.id, { frequency: 'monthly', endDate: null });
+    const { data, rules } = await ledger.load();
+
+    expect(rule).toEqual(expect.objectContaining({
+      type: 'expense', cents: 6230, note: 'Weekly shop', frequency: 'monthly',
+      startDate: '2026-10-17', endDate: null, nextDate: '2026-11-17', categoryIds: saved.categoryIds,
+    }));
+    expect(rules).toEqual([rule]);
+    expect(data.transactions).toHaveLength(1);
+    expect(data.transactions[0]!.ruleId).toBe(rule.id);
+  });
+
+  it('back-fills the occurrences between a past date and today when materialized', async () => {
+    const { ledger, saved } = await ledgerWithOneTransaction();
+    await ledger.createRuleFromTransaction(saved.id, { frequency: 'monthly', endDate: null });
+
+    const { created } = await ledger.materializeRules('2027-01-20');
+
+    expect(created.map((t) => t.date)).toEqual(['2026-11-17', '2026-12-17', '2027-01-17']);
+  });
+
+  it('keeps the end date it was given', async () => {
+    const { ledger, saved } = await ledgerWithOneTransaction();
+
+    const rule = await ledger.createRuleFromTransaction(saved.id, { frequency: 'weekly', endDate: '2026-12-31' });
+
+    expect(rule.endDate).toBe('2026-12-31');
+    expect(rule.nextDate).toBe('2026-10-24');
+  });
+});
+
+describe('rules and deleted Categories', () => {
+  it('a rule keeps its schedule but carries the deleted Category as a Retired label, and Undo restores it', async () => {
+    const { ledger, rule, groceries } = await ledgerWithRule();
+
+    const snapshot = await ledger.deleteCategory(groceries.id);
+    const afterDelete = (await ledger.load()).rules[0]!;
+
+    expect(afterDelete.categoryIds).toEqual([]);
+    expect(afterDelete.retired).toEqual(['Groceries']);
+    expect(afterDelete.frequency).toBe('monthly');
+
+    await ledger.restoreCategory(snapshot);
+    expect((await ledger.load()).rules).toEqual([rule]);
+  });
+
+  it('keeps generating Transactions with the Retired label after the Category is gone', async () => {
+    const { ledger, groceries } = await ledgerWithRule({ startDate: '2026-03-01', nextDate: '2026-03-01' });
+    await ledger.deleteCategory(groceries.id);
+
+    const { created } = await ledger.materializeRules('2026-03-02');
+
+    expect(created[0]).toEqual(expect.objectContaining({ categoryIds: [], retired: ['Groceries'] }));
+  });
+
+  it('a Retired label held only by a rule still reserves its name', async () => {
+    const { ledger, groceries } = await ledgerWithRule();
+    // Remove the Transaction that also used Groceries, so only the rule carries the label.
+    const { data } = await ledger.load();
+    for (const t of data.transactions) await ledger.deleteTransaction(t.id);
+
+    await ledger.deleteCategory(groceries.id);
+
+    expect(await ledger.createCategory('expense', 'groceries')).toEqual({ ok: false, reason: 'reserved' });
+  });
+});
+
+describe('replacing and erasing with rules', () => {
+  it('replaceAll swaps the rules too, and keeps settings', async () => {
+    const { ledger } = await ledgerWithRule();
+    await ledger.updateSettings({ language: 'it' });
+    const imported = {
+      id: 'new-rule', type: 'income' as const, cents: 100, categoryIds: [], retired: ['Pay'], note: 'x',
+      frequency: 'weekly' as const, startDate: '2026-01-01', endDate: null, nextDate: '2026-02-01',
+    };
+
+    await ledger.replaceAll({ categories: [], transactions: [] }, [imported]);
+    const { rules, settings } = await ledger.load();
+
+    expect(rules).toEqual([imported]);
+    expect(settings.language).toBe('it');
+  });
+
+  it('replaceAll without rules removes every existing rule', async () => {
+    const { ledger } = await ledgerWithRule();
+
+    await ledger.replaceAll({ categories: [], transactions: [] });
+
+    expect((await ledger.load()).rules).toEqual([]);
+  });
+
+  it('eraseAll removes the rules as well', async () => {
+    const { ledger } = await ledgerWithRule();
+
+    await ledger.eraseAll();
+
+    expect((await ledger.load()).rules).toEqual([]);
+  });
+});
+
+describe('an older copy of the app still has the database open', () => {
+  it('tells the caller it is waiting, and finishes the upgrade as soon as the older copy closes', async () => {
+    const name = freshName();
+    const older = await openDB(name, 1, {
+      upgrade(database) {
+        database.createObjectStore('categories', { keyPath: 'id' });
+        database.createObjectStore('transactions', { keyPath: 'id' });
+        database.createObjectStore('meta');
+      },
+    });
+    let waitingNotices = 0;
+
+    const opening = openLedger(name, nameOf, () => {
+      waitingNotices++;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(waitingNotices).toBe(1);
+
+    older.close();
+    const ledger = await opening;
+    expect((await ledger.load()).rules).toEqual([]);
   });
 });

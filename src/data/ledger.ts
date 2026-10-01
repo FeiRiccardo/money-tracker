@@ -1,16 +1,28 @@
 import { openDB, type IDBPDatabase } from 'idb';
+import { dueOccurrences } from '../domain/recurring';
 import { validateCategoryName, type NameError } from '../domain/rules';
 import {
   DEFAULT_SETTINGS,
   STARTER_CATEGORIES,
   type Category,
   type LedgerData,
+  type Frequency,
+  type RecurringRule,
   type Settings,
   type Transaction,
   type TxType,
 } from '../domain/types';
 
 export type TransactionInput = Omit<Transaction, 'id'>;
+
+/** What materializeRules did, so it can be undone as one batch. */
+export interface Materialized {
+  created: Transaction[];
+  /** The rules that moved on, as they were before. */
+  rulesBefore: RecurringRule[];
+}
+
+export type RuleInput = Omit<RecurringRule, 'id'>;
 
 export type CategoryResult = { ok: true; category: Category } | { ok: false; reason: NameError };
 
@@ -19,17 +31,31 @@ export interface CategoryDeletion {
   category: Category;
   /** The affected Transactions as they were before the delete. */
   transactions: Transaction[];
+  /** The affected rules as they were before the delete. */
+  rules: RecurringRule[];
   affected: number;
 }
 
 export interface Ledger {
-  load(): Promise<{ data: LedgerData; settings: Settings }>;
+  load(): Promise<{ data: LedgerData; rules: RecurringRule[]; settings: Settings }>;
   seedStarterCategories(): Promise<void>;
   addTransaction(input: TransactionInput): Promise<Transaction>;
   updateTransaction(id: string, input: TransactionInput): Promise<Transaction>;
   /** Deletes and returns a snapshot to pass to `restoreTransaction` for Undo. */
   deleteTransaction(id: string): Promise<Transaction>;
   restoreTransaction(snapshot: Transaction): Promise<void>;
+  addRule(input: RuleInput): Promise<RecurringRule>;
+  updateRule(id: string, input: RuleInput): Promise<RecurringRule>;
+  /** Stops the rule. Transactions it already created are kept, without their link to it. */
+  deleteRule(id: string): Promise<void>;
+  /** Makes an existing Transaction the first occurrence of a new rule (it is not duplicated). */
+  createRuleFromTransaction(
+    transactionId: string,
+    schedule: { frequency: Frequency; endDate: string | null },
+  ): Promise<RecurringRule>;
+  /** Creates every Transaction the rules have made due up to and including today (YYYY-MM-DD). */
+  materializeRules(today: string): Promise<Materialized>;
+  undoMaterialize(batch: Materialized): Promise<void>;
   createCategory(type: TxType, name: string): Promise<CategoryResult>;
   /** A renamed starter default becomes a plain custom Category (it stops translating). */
   renameCategory(id: string, name: string): Promise<CategoryResult>;
@@ -38,7 +64,7 @@ export interface Ledger {
   restoreCategory(snapshot: CategoryDeletion): Promise<void>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   /** Import: replaces all Categories and Transactions; settings are kept, the change count resets. */
-  replaceAll(data: LedgerData): Promise<void>;
+  replaceAll(data: LedgerData, rules?: RecurringRule[]): Promise<void>;
   /** Wipes everything, settings included, so the app is back at first run. */
   eraseAll(): Promise<void>;
   close(): void;
@@ -68,16 +94,35 @@ async function countChange(meta: Store, by: number): Promise<void> {
   await meta.put({ ...settings, changesSinceBackup: Math.max(0, settings.changesSinceBackup + by) }, 'settings');
 }
 
-function retiredNames(transactions: Transaction[], type: TxType): string[] {
-  return [...new Set(transactions.filter((t) => t.type === type).flatMap((t) => t.retired))];
+function retiredNames(carriers: Array<{ type: TxType; retired: string[] }>, type: TxType): string[] {
+  return [...new Set(carriers.filter((c) => c.type === type).flatMap((c) => c.retired))];
 }
 
-export async function openLedger(dbName: string, nameOf: (category: Category) => string): Promise<Ledger> {
-  const db: IDBPDatabase = await openDB(dbName, 1, {
-    upgrade(database) {
-      database.createObjectStore('categories', { keyPath: 'id' });
-      database.createObjectStore('transactions', { keyPath: 'id' });
-      database.createObjectStore('meta');
+/**
+ * Opens (and if needed upgrades) the database. `onWaiting` is called when an older copy of the app, open
+ * in another tab or window, is holding the database and the upgrade has to wait for it to close.
+ */
+export async function openLedger(
+  dbName: string,
+  nameOf: (category: Category) => string,
+  onWaiting?: () => void,
+): Promise<Ledger> {
+  // Version 1: categories, transactions, meta. Version 2 adds recurring rules (existing data is untouched).
+  const db: IDBPDatabase = await openDB(dbName, 2, {
+    upgrade(database, oldVersion) {
+      if (oldVersion < 1) {
+        database.createObjectStore('categories', { keyPath: 'id' });
+        database.createObjectStore('transactions', { keyPath: 'id' });
+        database.createObjectStore('meta');
+      }
+      if (oldVersion < 2) database.createObjectStore('rules', { keyPath: 'id' });
+    },
+    blocked() {
+      onWaiting?.();
+    },
+    blocking() {
+      // A newer version of the app needs to upgrade: let go of the database so it can.
+      db.close();
     },
   });
 
@@ -85,8 +130,9 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     async load() {
       const categories = (await db.getAll('categories')) as Category[];
       const transactions = (await db.getAll('transactions')) as Transaction[];
+      const rules = (await db.getAll('rules')) as RecurringRule[];
       const stored = (await db.get('meta', 'settings')) as Partial<Settings> | undefined;
-      return { data: { categories, transactions }, settings: { ...DEFAULT_SETTINGS, ...stored } };
+      return { data: { categories, transactions }, rules, settings: { ...DEFAULT_SETTINGS, ...stored } };
     },
 
     async seedStarterCategories() {
@@ -106,8 +152,10 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     },
 
     async addTransaction(input) {
-      const transaction: Transaction = { ...input, id: crypto.randomUUID() };
       const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const existing = (await tx.objectStore('transactions').getAll()) as Transaction[];
+      const createdAt = Math.max(Date.now(), ...existing.map((t) => (t.createdAt ?? 0) + 1));
+      const transaction: Transaction = { ...input, id: crypto.randomUUID(), createdAt };
       await tx.objectStore('transactions').put(transaction);
       await markUsed(tx.objectStore('categories'), transaction.categoryIds);
       await countChange(tx.objectStore('meta'), 1);
@@ -116,8 +164,14 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     },
 
     async updateTransaction(id, input) {
-      const transaction: Transaction = { ...input, id };
       const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const before = (await tx.objectStore('transactions').get(id)) as Transaction | undefined;
+      const transaction: Transaction = {
+        createdAt: before?.createdAt,
+        ruleId: before?.ruleId,
+        ...input,
+        id,
+      };
       await tx.objectStore('transactions').put(transaction);
       await markUsed(tx.objectStore('categories'), transaction.categoryIds);
       await countChange(tx.objectStore('meta'), 1);
@@ -141,13 +195,110 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
       await tx.done;
     },
 
+    async addRule(input) {
+      const rule: RecurringRule = { ...input, id: crypto.randomUUID() };
+      const tx = db.transaction(['rules', 'meta'], 'readwrite');
+      await tx.objectStore('rules').put(rule);
+      await countChange(tx.objectStore('meta'), 1);
+      await tx.done;
+      return rule;
+    },
+
+    async updateRule(id, input) {
+      const rule: RecurringRule = { ...input, id };
+      const tx = db.transaction(['rules', 'meta'], 'readwrite');
+      await tx.objectStore('rules').put(rule);
+      await countChange(tx.objectStore('meta'), 1);
+      await tx.done;
+      return rule;
+    },
+
+    async createRuleFromTransaction(transactionId, schedule) {
+      const tx = db.transaction(['transactions', 'rules', 'meta'], 'readwrite');
+      const source = (await tx.objectStore('transactions').get(transactionId)) as Transaction;
+      const draft: RecurringRule = {
+        id: crypto.randomUUID(),
+        type: source.type,
+        cents: source.cents,
+        categoryIds: source.categoryIds,
+        retired: source.retired,
+        note: source.note,
+        frequency: schedule.frequency,
+        startDate: source.date,
+        endDate: schedule.endDate,
+        nextDate: source.date,
+      };
+      // The Transaction itself is the first occurrence, so the rule continues from the one after it.
+      const rule: RecurringRule = { ...draft, nextDate: dueOccurrences(draft, source.date).nextDate };
+      await tx.objectStore('rules').put(rule);
+      await tx.objectStore('transactions').put({ ...source, ruleId: rule.id });
+      await countChange(tx.objectStore('meta'), 1);
+      await tx.done;
+      return rule;
+    },
+
+    async deleteRule(id) {
+      const tx = db.transaction(['rules', 'transactions', 'meta'], 'readwrite');
+      await tx.objectStore('rules').delete(id);
+      const all = (await tx.objectStore('transactions').getAll()) as Transaction[];
+      for (const t of all.filter((x) => x.ruleId === id)) {
+        const { ruleId: _link, ...rest } = t;
+        await tx.objectStore('transactions').put(rest);
+      }
+      await countChange(tx.objectStore('meta'), 1);
+      await tx.done;
+    },
+
+    async materializeRules(today) {
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
+      const rules = (await tx.objectStore('rules').getAll()) as RecurringRule[];
+      const existing = (await tx.objectStore('transactions').getAll()) as Transaction[];
+      let stamp = Math.max(Date.now(), ...existing.map((t) => (t.createdAt ?? 0) + 1));
+      const created: Transaction[] = [];
+      const rulesBefore: RecurringRule[] = [];
+
+      for (const rule of rules) {
+        const due = dueOccurrences(rule, today);
+        if (due.dates.length === 0) continue;
+        rulesBefore.push(rule);
+        for (const date of due.dates) {
+          const transaction: Transaction = {
+            id: crypto.randomUUID(),
+            date,
+            type: rule.type,
+            cents: rule.cents,
+            categoryIds: rule.categoryIds,
+            retired: rule.retired,
+            note: rule.note,
+            createdAt: stamp++,
+            ruleId: rule.id,
+          };
+          await tx.objectStore('transactions').put(transaction);
+          created.push(transaction);
+        }
+        await tx.objectStore('rules').put({ ...rule, nextDate: due.nextDate });
+      }
+      if (created.length > 0) await countChange(tx.objectStore('meta'), created.length);
+      await tx.done;
+      return { created, rulesBefore };
+    },
+
+    async undoMaterialize(batch) {
+      const tx = db.transaction(['transactions', 'rules', 'meta'], 'readwrite');
+      for (const t of batch.created) await tx.objectStore('transactions').delete(t.id);
+      for (const rule of batch.rulesBefore) await tx.objectStore('rules').put(rule);
+      await countChange(tx.objectStore('meta'), -batch.created.length);
+      await tx.done;
+    },
+
     async createCategory(type, name) {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       const all = (await tx.objectStore('categories').getAll()) as Category[];
       const transactions = (await tx.objectStore('transactions').getAll()) as Transaction[];
+      const rules = (await tx.objectStore('rules').getAll()) as RecurringRule[];
       const checked = validateCategoryName(name, {
         existing: all.filter((c) => c.type === type).map(nameOf),
-        retired: retiredNames(transactions, type),
+        retired: retiredNames([...transactions, ...rules], type),
       });
       if (!checked.ok) {
         await tx.done;
@@ -166,13 +317,14 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     },
 
     async renameCategory(id, name) {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       const all = (await tx.objectStore('categories').getAll()) as Category[];
       const current = all.find((c) => c.id === id)!;
       const transactions = (await tx.objectStore('transactions').getAll()) as Transaction[];
+      const rules = (await tx.objectStore('rules').getAll()) as RecurringRule[];
       const checked = validateCategoryName(name, {
         existing: all.filter((c) => c.type === current.type && c.id !== id).map(nameOf),
-        retired: retiredNames(transactions, current.type),
+        retired: retiredNames([...transactions, ...rules], current.type),
       });
       if (!checked.ok) {
         await tx.done;
@@ -187,7 +339,7 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     },
 
     async deleteCategory(id) {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       const category = (await tx.objectStore('categories').get(id)) as Category;
       const label = nameOf(category);
       const all = (await tx.objectStore('transactions').getAll()) as Transaction[];
@@ -199,16 +351,26 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
           retired: t.retired.includes(label) ? t.retired : [...t.retired, label],
         });
       }
+      const allRules = (await tx.objectStore('rules').getAll()) as RecurringRule[];
+      const touchedRules = allRules.filter((r) => r.categoryIds.includes(id));
+      for (const r of touchedRules) {
+        await tx.objectStore('rules').put({
+          ...r,
+          categoryIds: r.categoryIds.filter((c) => c !== id),
+          retired: r.retired.includes(label) ? r.retired : [...r.retired, label],
+        });
+      }
       await tx.objectStore('categories').delete(id);
       await countChange(tx.objectStore('meta'), 1);
       await tx.done;
-      return { category, transactions: touched, affected: touched.length };
+      return { category, transactions: touched, rules: touchedRules, affected: touched.length };
     },
 
     async restoreCategory(snapshot) {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       await tx.objectStore('categories').put(snapshot.category);
       for (const t of snapshot.transactions) await tx.objectStore('transactions').put(t);
+      for (const r of snapshot.rules) await tx.objectStore('rules').put(r);
       await countChange(tx.objectStore('meta'), -1);
       await tx.done;
     },
@@ -222,12 +384,14 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
       return settings;
     },
 
-    async replaceAll(data) {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+    async replaceAll(data, rules = []) {
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       await tx.objectStore('categories').clear();
       await tx.objectStore('transactions').clear();
+      await tx.objectStore('rules').clear();
       for (const c of data.categories) await tx.objectStore('categories').put(c);
       for (const t of data.transactions) await tx.objectStore('transactions').put(t);
+      for (const r of rules) await tx.objectStore('rules').put(r);
       const stored = ((await tx.objectStore('meta').get('settings')) as Partial<Settings> | undefined) ?? {};
       await tx.objectStore('meta').put(
         { ...DEFAULT_SETTINGS, ...stored, onboarded: true, changesSinceBackup: 0 },
@@ -237,9 +401,10 @@ export async function openLedger(dbName: string, nameOf: (category: Category) =>
     },
 
     async eraseAll() {
-      const tx = db.transaction(['categories', 'transactions', 'meta'], 'readwrite');
+      const tx = db.transaction(['categories', 'transactions', 'rules', 'meta'], 'readwrite');
       await tx.objectStore('categories').clear();
       await tx.objectStore('transactions').clear();
+      await tx.objectStore('rules').clear();
       await tx.objectStore('meta').clear();
       await tx.done;
     },

@@ -1,5 +1,7 @@
 export type TxType = 'expense' | 'income';
 export type Language = 'en' | 'it';
+export type Frequency = 'weekly' | 'monthly' | 'yearly';
+export type SortOrder = 'newest' | 'oldest' | 'largest' | 'smallest';
 
 export interface Category {
   id: string;
@@ -23,6 +25,26 @@ export interface Transaction {
   /** Retired labels: frozen names of deleted Categories. */
   retired: string[];
   note: string;
+  /** When it was recorded; breaks ties between Transactions on the same date. */
+  createdAt?: number;
+  /** Set when a recurring rule created this Transaction (not part of the backup). */
+  ruleId?: string;
+}
+
+/** A schedule that creates Transactions automatically when the app opens. */
+export interface RecurringRule {
+  id: string;
+  type: TxType;
+  cents: number;
+  categoryIds: string[];
+  retired: string[];
+  note: string;
+  frequency: Frequency;
+  /** First occurrence, YYYY-MM-DD. Monthly and yearly rules keep this day of the month. */
+  startDate: string;
+  endDate: string | null;
+  /** The next occurrence not yet created. */
+  nextDate: string;
 }
 
 export interface LedgerData {
@@ -40,6 +62,8 @@ export interface Settings {
   backupBannerHiddenUntil: number;
   installNudgeHiddenUntil: number;
   persistRequested: boolean;
+  /** Remembered ordering of Transaction lists. */
+  sortOrder: SortOrder;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -51,6 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   backupBannerHiddenUntil: 0,
   installNudgeHiddenUntil: 0,
   persistRequested: false,
+  sortOrder: 'newest',
 };
 
 /** Starter Categories. `key` is stored as `defaultKey` and translated at display. */

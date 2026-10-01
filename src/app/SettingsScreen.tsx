@@ -11,7 +11,7 @@ import { APP_VERSION } from './version';
 
 type Overlay = null | 'opening' | 'import' | 'erase';
 
-export function SettingsScreen({ onBack, onCategories }: { onBack: () => void; onCategories: () => void }) {
+export function SettingsScreen({ onBack, onCategories, onRecurring }: { onBack: () => void; onCategories: () => void; onRecurring: () => void }) {
   const { t } = useTranslation();
   const store = useStore();
   const { settings, language } = store;
@@ -56,6 +56,13 @@ export function SettingsScreen({ onBack, onCategories }: { onBack: () => void; o
           </button>
           <button className="list-row" onClick={onCategories}>
             <span>{t('settings.categories')}</span>
+            <span className="muted">›</span>
+          </button>
+          <button className="list-row" onClick={onRecurring}>
+            <span>
+              {t('settings.recurring')}
+              <small className="muted block">{t('settings.recurringHelp')}</small>
+            </span>
             <span className="muted">›</span>
           </button>
         </section>

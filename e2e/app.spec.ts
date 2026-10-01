@@ -42,6 +42,7 @@ test('add: Save needs an amount and a Category; the Transaction then shows in th
   await page.getByRole('button', { name: 'Transport', exact: true }).click();
   await expect(save).toBeEnabled();
   await save.click();
+  await expect(page.getByRole('dialog', { name: 'New Transaction' })).toHaveCount(0);
 
   await expect(page.getByTestId('balance')).toContainText('12.50');
   await expect(page.getByRole('button', { name: /Transport.*12\.50/ })).toBeVisible();

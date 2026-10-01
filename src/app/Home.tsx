@@ -1,16 +1,25 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { activeBanner } from '../domain/reminders';
+import { sortTransactions } from '../domain/search';
 import { balance, summarize, type SummaryLine } from '../domain/summary';
 import type { Transaction } from '../domain/types';
 import { categoryName } from '../i18n';
 import { dayLabel, formatMoney, monthLabel, monthOf, shiftMonth, todayISO } from './format';
 import { isIos, isStandalone } from './platform';
 import { useStore } from './store';
+import { SortSelect, TransactionRow } from './TransactionRow';
 
 type Tab = 'transactions' | 'summary';
 
-export function Home({ onAdd, onEdit, onSettings }: { onAdd: () => void; onEdit: (t: Transaction) => void; onSettings: () => void }) {
+interface HomeProps {
+  onAdd: () => void;
+  onEdit: (t: Transaction) => void;
+  onSettings: () => void;
+  onSearch: () => void;
+}
+
+export function Home({ onAdd, onEdit, onSettings, onSearch }: HomeProps) {
   const { t } = useTranslation();
   const store = useStore();
   const { data, settings, language } = store;
@@ -19,14 +28,12 @@ export function Home({ onAdd, onEdit, onSettings }: { onAdd: () => void; onEdit:
 
   const money = (cents: number) => formatMoney(cents, language);
   const monthTransactions = useMemo(
-    () =>
-      data.transactions
-        .filter((tx) => tx.date.startsWith(month))
-        .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)),
-    [data.transactions, month],
+    () => sortTransactions(data.transactions.filter((tx) => tx.date.startsWith(month)), settings.sortOrder),
+    [data.transactions, month, settings.sortOrder],
   );
   const summary = useMemo(() => summarize(data, month, categoryName), [data, month]);
-  const days = [...new Set(monthTransactions.map((tx) => tx.date))];
+  const byDate = settings.sortOrder === 'newest' || settings.sortOrder === 'oldest';
+  const days = byDate ? [...new Set(monthTransactions.map((tx) => tx.date))] : [];
 
   const banner = activeBanner({
     backup: {
@@ -44,17 +51,6 @@ export function Home({ onAdd, onEdit, onSettings }: { onAdd: () => void; onEdit:
       hiddenUntil: settings.installNudgeHiddenUntil,
     },
   });
-
-  const chips = (tx: Transaction) => {
-    const byId = new Map(data.categories.map((c) => [c.id, c]));
-    return [
-      ...tx.categoryIds.flatMap((id) => {
-        const c = byId.get(id);
-        return c ? [{ key: id, name: categoryName(c), retired: false }] : [];
-      }),
-      ...tx.retired.map((name) => ({ key: `r:${name}`, name, retired: true })),
-    ];
-  };
 
   const noTransactionsAtAll = data.transactions.length === 0;
 
@@ -77,9 +73,14 @@ export function Home({ onAdd, onEdit, onSettings }: { onAdd: () => void; onEdit:
               {money(balance(data, settings.openingCents))}
             </b>
           </div>
-          <button className="icon-btn" aria-label={t('home.settings')} onClick={onSettings}>
-            ⚙
-          </button>
+          <div className="head-actions">
+            <button className="icon-btn" aria-label={t('home.search')} onClick={onSearch}>
+              ⌕
+            </button>
+            <button className="icon-btn" aria-label={t('home.settings')} onClick={onSettings}>
+              ⚙
+            </button>
+          </div>
         </div>
       </header>
 
@@ -124,39 +125,33 @@ export function Home({ onAdd, onEdit, onSettings }: { onAdd: () => void; onEdit:
 
         {tab === 'transactions' && (
           <div className="list">
+            {monthTransactions.length > 0 && (
+              <div className="list-tools">
+                <SortSelect value={settings.sortOrder} onChange={(order) => void store.setSortOrder(order)} />
+              </div>
+            )}
             {monthTransactions.length === 0 && (
               <p className="empty">{noTransactionsAtAll ? t('home.emptyNone') : t('home.emptyMonth')}</p>
             )}
-            {days.map((day) => {
-              const dayTx = monthTransactions.filter((tx) => tx.date === day);
-              const net = dayTx.reduce((sum, tx) => sum + (tx.type === 'income' ? tx.cents : -tx.cents), 0);
-              return (
-                <section key={day}>
-                  <div className="day-head">
-                    <span>{day === todayISO() ? t('home.today') : dayLabel(day, language)}</span>
-                    <span>{money(net)}</span>
-                  </div>
-                  {dayTx.map((tx) => (
-                    <button key={tx.id} className="tx-row" onClick={() => onEdit(tx)}>
-                      <div>
-                        <div className="tx-title">{tx.note || chips(tx)[0]?.name}</div>
-                        <div className="tags">
-                          {chips(tx).map((c) => (
-                            <span key={c.key} className={`tag ${c.retired ? 'retired' : ''}`}>
-                              {c.name}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className={`amount ${tx.type}`}>
-                        {tx.type === 'income' ? '+' : '−'}
-                        {money(tx.cents)}
-                      </div>
-                    </button>
-                  ))}
-                </section>
-              );
-            })}
+
+            {byDate &&
+              days.map((day) => {
+                const dayTx = monthTransactions.filter((tx) => tx.date === day);
+                const net = dayTx.reduce((sum, tx) => sum + (tx.type === 'income' ? tx.cents : -tx.cents), 0);
+                return (
+                  <section key={day}>
+                    <div className="day-head">
+                      <span>{day === todayISO() ? t('home.today') : dayLabel(day, language)}</span>
+                      <span>{money(net)}</span>
+                    </div>
+                    {dayTx.map((tx) => (
+                      <TransactionRow key={tx.id} tx={tx} onOpen={onEdit} />
+                    ))}
+                  </section>
+                );
+              })}
+
+            {!byDate && monthTransactions.map((tx) => <TransactionRow key={tx.id} tx={tx} onOpen={onEdit} showDate />)}
           </div>
         )}
 

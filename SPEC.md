@@ -11,12 +11,15 @@ This spec is compiled from the Wayfinder map in `.wayfinder/`. Every section nam
 - Manual entry of Expenses and Income, each with one or more Categories, an amount, a date and an optional note.
 - User-editable flat Categories, with separate lists for Expenses and Income.
 - A Transactions list, an all-time Balance, and a monthly summary.
+- Search and filter across all Transactions, with a choice of ordering.
+- Recurring Transactions (weekly, monthly or yearly), created automatically when the app opens.
+- Quick entry helpers: Duplicate a Transaction, and a Recent strip in the add form.
 - Local-only storage on the device, with CSV export and import.
 - One Currency, EUR. English and Italian UI, selectable.
 
 **Out of scope for v1**
 - Sync, accounts, bank connections, receipt scanning or OCR.
-- Budgets, recurring Transactions, charts.
+- Budgets and charts.
 - Multiple accounts or wallets, multiple Currencies, shared or household use.
 - Sub-categories and merging Categories.
 - Merge-style import, JSON or ZIP backup, and settings inside the backup.
@@ -42,6 +45,8 @@ See `CONTEXT.md` for the glossary. In short:
 - `amount`: greater than zero, at most 2 decimals, always positive (the type gives the direction). *Recommendation: store as integer cents to avoid floating-point errors.*
 - Categories: one or more entries. Each entry is either a reference to a live Category or a Retired label (frozen text). At least one entry is always present.
 - `note`: optional text.
+- `createdAt`: when it was recorded; used only to order Transactions on the same date (later-recorded first). Added after v1, so older Transactions may lack it.
+- `ruleId`: set when a recurring rule created the Transaction or it was made the first occurrence of one. It is not exported.
 
 **Category**
 - `type` (expense or income), `name`, and an optional `defaultKey` that is set only while the Category is a still-translatable starter default.
@@ -55,8 +60,14 @@ See `CONTEXT.md` for the glossary. In short:
 - It can be removed from a Transaction but never re-added.
 - It reserves its name: a Category with the same name in that type cannot be created or renamed to. *Derived consequence: the reservation lasts as long as at least one Transaction still carries the label.*
 
+**Recurring rule**
+- The same content as a Transaction (`type`, `amount`, Categories or Retired labels, `note`) plus `frequency` (weekly, monthly or yearly), `startDate`, an optional `endDate`, and `nextDate`, the next occurrence not yet created.
+- Monthly and yearly rules keep the day of the month of `startDate`; in a shorter month they use its last day (a rule starting on the 31st uses Feb 28, then goes back to Mar 31). A yearly rule starting on Feb 29 uses Feb 28 in other years.
+- A deleted Category is replaced on a rule by a Retired label, exactly as on Transactions, and a label carried only by a rule still reserves its name.
+- Stored in its own IndexedDB store. The database schema version is now 2; opening a version-1 database adds the store and leaves every existing record untouched.
+
 **Settings** (device-level, stored separately from Transactions, never exported)
-- Language (English default), Opening balance (default 0.00), plus bookkeeping for reminders: last-backed-up time, change count since last backup, banner dismissal times.
+- Language (English default), Opening balance (default 0.00), plus bookkeeping for reminders: last-backed-up time, change count since last backup, banner dismissal times, and the chosen sort order for Transaction lists (newest first by default).
 
 **Starter Categories**
 - Expense: Groceries, Dining out, Transport, Housing, Utilities, Health, Entertainment, Shopping, Other.
@@ -119,6 +130,28 @@ Opened by the gear icon; a back arrow returns home. One scrolling screen of grou
 - An empty month while other months have data: "No Transactions this month. Tap + to add one." The month switcher keeps working.
 - Summary tab, empty month: "Add a Transaction to see this month's summary."
 
+### 4.7 Search, filter and sort
+
+- A magnifier next to the gear opens a **Search screen over all months** (the month switcher does not apply there).
+- Text search ignores upper and lower case and accents ("caffe" finds "Caffè"). Every word must match, in the note, a Category name or a Retired label. If the whole text is a number (`12,50` or `12.5`), Transactions with exactly that amount also match.
+- Filters, combined with AND: **type** (All, Expenses, Income); **Categories** (one or more, a Transaction matches if it has any of them; Retired labels can be chosen too); **date range** (All time, This month, Last month, This year, or Custom From and To, inclusive, either end may be empty).
+- A results line shows the count and the **real net** of the results, calculated from the Transactions themselves, so the overlapping-Categories caveat of the summary does not apply. "Clear filters" resets everything.
+- **Sort** has four options: Newest first (default), Oldest first, Largest amount, Smallest amount. Within one day, the later-recorded Transaction comes first. The same control sits on the Search screen and on the Transactions tab, and the choice is remembered on the device. Date sorts keep the day headers on the home list; amount sorts show one flat list with each row's date.
+
+### 4.8 Recurring Transactions
+
+- **Creating:** the add form has a **Repeat** row (Never, Weekly, Monthly, Yearly) and, when a frequency is chosen, an optional end date. The date in the form is the first occurrence. Setting Repeat on an existing ordinary Transaction makes it the first occurrence of a new rule; it is not duplicated and the next occurrence is the following period.
+- **When Transactions are created:** automatically, when the app opens and whenever it returns to the foreground, never in advance. Every occurrence due up to and including today becomes an ordinary Transaction (editable and deletable like any other), including ones missed while the app was closed, and a message says how many were added with one **Undo** for the whole batch. A new rule whose first date is in the past back-fills immediately in the same way.
+- Generated Transactions carry a small ↻ mark. In the edit form a Transaction made by a rule shows "↻ Repeats monthly" with **Edit rule** and **Stop repeating**, and no Repeat picker.
+- **Managing:** Settings has a **Recurring** screen listing every rule (note or first Category, amount, frequency, next date, or "Ended"). Tapping one edits amount, note, Categories, frequency and end date, or stops it. Edits to a rule affect future Transactions only; editing one generated Transaction changes only that one.
+- **Stopping** keeps every Transaction already created and removes their ↻ mark.
+- The app can only create Transactions while it is open. If it is not opened for a month, they are created, back-dated correctly, the next time it is.
+
+### 4.9 Quick entry
+
+- **Duplicate:** a button in the edit form opens a new add form pre-filled with that Transaction's type, amount, Categories and note, dated today. Nothing is saved until Save. Retired labels are never copied, so if a Transaction had only Retired labels, a Category must be chosen first.
+- **Recent:** in the add form, up to five of the last different Transactions (same type, amount, note and Categories) appear as one-tap chips that fill the form the same way.
+
 ## 5. Monthly summary
 
 - The summary covers the month shown in the header. Months are determined by the Transaction's date.
@@ -131,17 +164,19 @@ Source tickets: *Home screen prototype*; premises in `.wayfinder/map.md`.
 
 ## 6. Import and export
 
-Two separate CSV files, in a fixed dialect whatever the UI language: comma delimiter, dot decimal, UTF-8 (with a byte-order mark so spreadsheets read accents), dates as ISO `YYYY-MM-DD`. No JSON, no ZIP. Source ticket: *Import and export rules*.
+Two CSV files, plus a third when there are recurring rules, in a fixed dialect whatever the UI language: comma delimiter, dot decimal, UTF-8 (with a byte-order mark so spreadsheets read accents), dates as ISO `YYYY-MM-DD`. No JSON, no ZIP. Source ticket: *Import and export rules*.
 
 **`transactions.csv`** columns: `date`, `type` (`expense` or `income`), `amount` (positive), `categories`, `note`. Several Categories in one cell are separated by `|`. There is no `id` column.
 
 **`categories.csv`** columns: `type`, `name`, `default_key`. `default_key` is blank for a custom Category and set (for example `groceries`) for a still-translatable starter default.
 
+**`recurring.csv`** (written only when there is at least one rule; optional on import) columns: `type`, `amount` (positive), `categories` (separated by `|`), `note`, `frequency` (`weekly`, `monthly` or `yearly`), `start_date`, `end_date` (blank if none), `next_date`. `next_date` is what prevents duplicates after a restore: nothing is created before that date. A blank `next_date` is read as the start date. The link between a rule and the Transactions it made is not exported, so after a restore older generated Transactions lose their ↻ mark but nothing is duplicated. Rows are validated like the others (type, amount, frequency, real dates, end date not before start date, at least one Category name); bad rows are skipped and listed.
+
 **Retired labels** have no row in `categories.csv`. They appear only as names in a Transaction's `categories` cell. On import, any name in a Transaction that is not in the categories list becomes a Retired label.
 
-**Export:** all history, no filters. File names carry the date (`transactions-2026-10-18.csv`, `categories-2026-10-18.csv`). On a phone, use the share sheet (Web Share API) with both files when supported, so they land in Files, iCloud Drive or Google Drive; otherwise fall back to two downloads.
+**Export:** all history, no filters. Transactions are listed by date, and within a day by when they were recorded, so a same-day order survives a restore. File names carry the date (`transactions-2026-10-18.csv`, `categories-2026-10-18.csv`, and `recurring-2026-10-18.csv` when there are rules). On a phone, use the share sheet (Web Share API) with all the files when supported, so they land in Files, iCloud Drive or Google Drive; otherwise fall back to separate downloads.
 
-**Import:** one mode only, **replace everything**. The user selects both files together. A preview shows counts (rows to import, rows with errors) and requires an explicit confirmation that tells them to export first. Validation reuses the entry rules: amount greater than zero with at most 2 decimals, a valid ISO date, a `type` of expense or income, and at least one name in `categories`. Invalid rows are skipped and listed in the preview with a row number and a reason; the user can import the valid rows or cancel. A short-lived Undo for the whole import is included (see section 11). Settings (language, Opening balance) are neither read nor changed by an import. After a successful import the app shows a one-time "Check your opening balance" step with the current value editable and a line saying it is not stored in the backup files.
+**Import:** one mode only, **replace everything**. The user selects the files together: Transactions and Categories are required, Recurring is optional (a backup without it restores with no rules, and restoring replaces any existing rules). A preview shows counts (rows to import, rows with errors) and requires an explicit confirmation that tells them to export first. Validation reuses the entry rules: amount greater than zero with at most 2 decimals, a valid ISO date, a `type` of expense or income, and at least one name in `categories`. Invalid rows are skipped and listed in the preview with a row number and a reason; the user can import the valid rows or cancel. A short-lived Undo for the whole import is included (see section 11). Settings (language, Opening balance) are neither read nor changed by an import. After a successful import the app shows a one-time "Check your opening balance" step with the current value editable and a line saying it is not stored in the backup files.
 
 ## 7. Backup reminders and storage durability
 
@@ -181,6 +216,15 @@ Source ticket: *Tech stack*. The owner is one person plus an agent, so the spec 
 8. An import with invalid rows lists them with row numbers and lets the user import the rest or cancel.
 9. With an empty database the first-run screen offers both Start fresh and Restore from backup.
 10. The backup banner follows the rule in section 7, and dismissing it hides it for 3 days.
+11. Searching "CAFFE" finds a Transaction noted "Caffè al bar"; searching `12,50` finds a €12.50 Transaction.
+12. Category filter keeps a Transaction that has any one of the chosen Categories (or Retired labels); a date range includes both end dates.
+13. Sorting by Largest or Smallest amount shows one flat list; Newest and Oldest keep day headers; the choice survives a reload.
+14. A monthly rule starting on Jan 31 creates Jan 31, Feb 28 and Mar 31 (not Mar 3), and a rule never creates the same occurrence twice.
+15. Repeat weekly on a date 14 days ago creates the two later occurrences at once, with one Undo that removes exactly those.
+16. Stopping a rule keeps all its Transactions and removes the ↻ marks.
+17. Duplicate and Recent pre-fill the form with today's date and never copy a Retired label.
+18. A backup with rules has a third file; restoring it brings the rules back with their `next_date`; restoring only the two older files works and leaves no rules.
+19. A database written by the first version opens with all its Transactions and settings intact.
 
 ## 11. Open items, assumptions and delegated decisions
 
@@ -194,6 +238,11 @@ Check these before building; each is also recorded in the named ticket.
 - **Home screen coverage.** The owner chose variant A with the single comment "I like the first design". The prototype was only syntax-checked, not exercised end to end. Not covered: Summary edge cases (ties, one very large Category) and the final look of Settings, the Categories screen and first-run, which were specified in words, not prototyped.
 - **Settings Categories list is alphabetical** (an assumption stated in the Category lifecycle ticket, then carried into the Categories screen).
 - **Storage research gaps:** Safari's `persist()` heuristics are undocumented, the 7-day cap is documented on WebKit's tracking-prevention page but not repeated in the 2023 storage post, and no primary source covers iOS Home Screen app data when the app is deleted (assume lost).
+- **Recurring, search and quick entry were added after v1.** The owner chose them ("all recommended") from Claude's list; decisions Q1 to Q13 of that round are written into sections 4.7 to 4.9 and 6. A trend chart was explicitly declined.
+- **The third backup file is written only when rules exist.** The decision said "Export adds a third file"; writing an empty file for users with no rules only adds a download on a phone and restores identically, so it was left out. Say so if you want it always.
+- **Back-fill can surprise.** Creating a rule with a first date far in the past creates every occurrence since then straight away (with one Undo). That follows the decision but is easy to do by accident with a wrong date.
+- **Recurring only runs while the app is opened.** There is no background job on a static site.
+- **Tie-breaking uses a `createdAt` field added later.** Transactions recorded before it existed have no value and sort after newer ones on the same date.
 - **Hosting is left to the owner** (Cloudflare Pages or GitHub Pages).
 - **Italian translations** of the starter Category names and all UI strings are to be written at build time.
 

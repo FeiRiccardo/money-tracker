@@ -5,27 +5,56 @@ import { CategoriesScreen } from './CategoriesScreen';
 import { FirstRun } from './FirstRun';
 import { Home } from './Home';
 import { OpeningBalanceDialog } from './OpeningBalanceDialog';
+import { RecurringScreen } from './RecurringScreen';
+import { SearchScreen } from './SearchScreen';
 import { SettingsScreen } from './SettingsScreen';
 import { useStore } from './store';
-import { TransactionForm } from './TransactionForm';
+import { TransactionForm, type Prefill } from './TransactionForm';
 import { SaveFailedDialog, ToastView } from './ui';
 
-type Screen = 'home' | 'settings' | 'categories';
+type Screen = 'home' | 'settings' | 'categories' | 'recurring' | 'search';
+
+interface FormState {
+  transaction?: Transaction;
+  prefill?: Prefill;
+  /** Changes when a new form replaces the open one (Duplicate), so the fields start over. */
+  key: number;
+}
 
 function Shell() {
   const [screen, setScreen] = useState<Screen>('home');
-  const [form, setForm] = useState<{ transaction?: Transaction } | null>(null);
+  const [form, setForm] = useState<FormState | null>(null);
+  const open = (next: Omit<FormState, 'key'>) => setForm((current) => ({ ...next, key: (current?.key ?? 0) + 1 }));
 
   return (
     <>
       {screen === 'home' && (
-        <Home onAdd={() => setForm({})} onEdit={(transaction) => setForm({ transaction })} onSettings={() => setScreen('settings')} />
+        <Home
+          onAdd={() => open({})}
+          onEdit={(transaction) => open({ transaction })}
+          onSettings={() => setScreen('settings')}
+          onSearch={() => setScreen('search')}
+        />
       )}
+      {screen === 'search' && <SearchScreen onBack={() => setScreen('home')} onEdit={(transaction) => open({ transaction })} />}
       {screen === 'settings' && (
-        <SettingsScreen onBack={() => setScreen('home')} onCategories={() => setScreen('categories')} />
+        <SettingsScreen
+          onBack={() => setScreen('home')}
+          onCategories={() => setScreen('categories')}
+          onRecurring={() => setScreen('recurring')}
+        />
       )}
       {screen === 'categories' && <CategoriesScreen onBack={() => setScreen('settings')} />}
-      {form && <TransactionForm transaction={form.transaction} onClose={() => setForm(null)} />}
+      {screen === 'recurring' && <RecurringScreen onBack={() => setScreen('settings')} />}
+      {form && (
+        <TransactionForm
+          key={form.key}
+          transaction={form.transaction}
+          prefill={form.prefill}
+          onClose={() => setForm(null)}
+          onDuplicate={(prefill) => open({ prefill })}
+        />
+      )}
     </>
   );
 }
@@ -35,7 +64,14 @@ export default function App() {
   const store = useStore();
 
   let body;
-  if (!store.ready) body = <div className="splash" aria-busy="true" />;
+  if (!store.ready && store.waitingForOtherCopy)
+    body = (
+      <div className="screen first-run">
+        <h1>{t('app.updating')}</h1>
+        <p>{t('app.updatingBody')}</p>
+      </div>
+    );
+  else if (!store.ready) body = <div className="splash" aria-busy="true" />;
   else if (store.storageError)
     body = (
       <div className="screen first-run">

@@ -1,8 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { openLedger, type CategoryResult, type Ledger, type TransactionInput } from '../data/ledger';
+import { openLedger, type CategoryResult, type Ledger, type RuleInput, type TransactionInput } from '../data/ledger';
 import { BACKUP_DISMISS_MS, INSTALL_DISMISS_MS } from '../domain/reminders';
-import { DEFAULT_SETTINGS, type Language, type LedgerData, type Settings, type TxType } from '../domain/types';
+import {
+  DEFAULT_SETTINGS,
+  type Frequency,
+  type Language,
+  type LedgerData,
+  type RecurringRule,
+  type Settings,
+  type SortOrder,
+  type TxType,
+} from '../domain/types';
 import i18n, { categoryName, setLanguage as applyLanguage } from '../i18n';
+import { todayISO } from './format';
 import { exportFiles, requestPersistence } from './platform';
 
 export interface Toast {
@@ -11,10 +21,19 @@ export interface Toast {
   onAction?: () => void;
 }
 
+/** "Repeat" chosen on a Transaction: it becomes the first occurrence of a new rule. */
+export interface Repeat {
+  frequency: Frequency;
+  endDate: string | null;
+}
+
 export interface Store {
   ready: boolean;
   storageError: boolean;
+  /** True while an older copy of the app, open elsewhere, holds the database and blocks the update. */
+  waitingForOtherCopy: boolean;
   data: LedgerData;
+  rules: RecurringRule[];
   settings: Settings;
   language: Language;
   toast: Toast | null;
@@ -25,16 +44,19 @@ export interface Store {
   /** True right after an import: the opening balance is not in the backup, so ask the user to check it. */
   openingCheck: boolean;
   dismissOpeningCheck: () => void;
-  addTransaction: (input: TransactionInput) => Promise<boolean>;
-  updateTransaction: (id: string, input: TransactionInput) => Promise<boolean>;
+  addTransaction: (input: TransactionInput, repeat?: Repeat) => Promise<boolean>;
+  updateTransaction: (id: string, input: TransactionInput, repeat?: Repeat) => Promise<boolean>;
   deleteTransaction: (id: string) => Promise<void>;
+  updateRule: (id: string, input: RuleInput) => Promise<boolean>;
+  stopRule: (id: string) => Promise<void>;
   createCategory: (type: TxType, name: string) => Promise<CategoryResult>;
   renameCategory: (id: string, name: string) => Promise<CategoryResult>;
   deleteCategory: (id: string) => Promise<void>;
   setLanguage: (language: Language) => Promise<void>;
   setOpeningBalance: (cents: number) => Promise<void>;
+  setSortOrder: (order: SortOrder) => Promise<void>;
   startFresh: (openingCents: number) => Promise<void>;
-  applyImport: (data: LedgerData) => Promise<void>;
+  applyImport: (data: LedgerData, rules: RecurringRule[]) => Promise<void>;
   eraseAll: () => Promise<void>;
   exportBackup: () => Promise<boolean>;
   dismissBanner: (kind: 'backup' | 'install') => Promise<void>;
@@ -53,9 +75,12 @@ const EMPTY: LedgerData = { categories: [], transactions: [] };
 export function StoreProvider({ children }: { children: ReactNode }) {
   const ledgerRef = useRef<Ledger | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  const runningRecurring = useRef(false);
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
+  const [waitingForOtherCopy, setWaitingForOtherCopy] = useState(false);
   const [data, setData] = useState<LedgerData>(EMPTY);
+  const [rules, setRules] = useState<RecurringRule[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [toast, setToast] = useState<Toast | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -64,15 +89,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     const loaded = await ledgerRef.current!.load();
     setData(loaded.data);
+    setRules(loaded.rules);
     setSettings(loaded.settings);
     applyLanguage(loaded.settings.language);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    openLedger('money-tracker', categoryName)
+    openLedger('money-tracker', categoryName, () => setWaitingForOtherCopy(true))
       .then(async (ledger) => {
         if (cancelled) return;
+        setWaitingForOtherCopy(false);
         ledgerRef.current = ledger;
         await refresh();
         setReady(true);
@@ -112,6 +139,49 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  /** Creates the Transactions the recurring rules have made due, and offers one Undo for the batch. */
+  const runRecurring = useCallback(
+    async (silent = false) => {
+      if (!ledgerRef.current || runningRecurring.current) return;
+      runningRecurring.current = true;
+      try {
+        const batch = await ledgerRef.current.materializeRules(todayISO());
+        if (batch.created.length === 0) return;
+        await refresh();
+        if (!silent) {
+          showToast(
+            {
+              message: i18n.t('recurring.added', { count: batch.created.length }),
+              actionLabel: i18n.t('common.undo'),
+              onAction: () => {
+                dismissToast();
+                void write((l) => l.undoMaterialize(batch));
+              },
+            },
+            8000,
+          );
+        }
+      } catch {
+        setSaveFailed(true);
+      } finally {
+        runningRecurring.current = false;
+      }
+    },
+    [refresh, showToast, dismissToast, write],
+  );
+
+  // Run when the app opens and whenever it comes back to the foreground (a new day may have started).
+  const onboarded = settings.onboarded;
+  useEffect(() => {
+    if (!ready || storageError || !onboarded) return;
+    void runRecurring();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void runRecurring();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [ready, storageError, onboarded, runRecurring]);
+
   const store = useMemo<Store>(() => {
     const requestPersistenceOnce = async () => {
       const current = (await ledgerRef.current!.load()).settings;
@@ -123,7 +193,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {
       ready,
       storageError,
+      waitingForOtherCopy,
       data,
+      rules,
       settings,
       language: settings.language,
       toast,
@@ -134,16 +206,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openingCheck,
       dismissOpeningCheck: () => setOpeningCheck(false),
 
-      async addTransaction(input) {
-        const result = await write((l) => l.addTransaction(input));
+      async addTransaction(input, repeat) {
+        const result = await write(async (l) => {
+          const saved = await l.addTransaction(input);
+          if (repeat) await l.createRuleFromTransaction(saved.id, repeat);
+          return saved;
+        });
         if (result.ok) {
           await requestPersistenceOnce();
+          if (repeat) await runRecurring();
           await refresh();
         }
         return result.ok;
       },
-      async updateTransaction(id, input) {
-        return (await write((l) => l.updateTransaction(id, input))).ok;
+      async updateTransaction(id, input, repeat) {
+        const result = await write(async (l) => {
+          await l.updateTransaction(id, input);
+          if (repeat) await l.createRuleFromTransaction(id, repeat);
+        });
+        if (result.ok && repeat) await runRecurring();
+        return result.ok;
       },
       async deleteTransaction(id) {
         const result = await write((l) => l.deleteTransaction(id));
@@ -157,6 +239,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             void write((l) => l.restoreTransaction(snapshot));
           },
         });
+      },
+
+      async updateRule(id, input) {
+        return (await write((l) => l.updateRule(id, input))).ok;
+      },
+      async stopRule(id) {
+        await write((l) => l.deleteRule(id));
       },
 
       async createCategory(type, name) {
@@ -188,6 +277,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       async setOpeningBalance(cents) {
         await write((l) => l.updateSettings({ openingCents: cents }));
       },
+      async setSortOrder(order) {
+        await write((l) => l.updateSettings({ sortOrder: order }));
+      },
       async startFresh(openingCents) {
         await write(async (l) => {
           await l.seedStarterCategories();
@@ -195,10 +287,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         });
       },
 
-      async applyImport(imported) {
+      async applyImport(imported, importedRules) {
         const before = await ledgerRef.current!.load();
-        const result = await write((l) => l.replaceAll(imported));
+        const result = await write((l) => l.replaceAll(imported, importedRules));
         if (!result.ok) return;
+        await runRecurring(true);
         setOpeningCheck(true);
         showToast(
           {
@@ -208,7 +301,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               dismissToast();
               setOpeningCheck(false);
               void write(async (l) => {
-                await l.replaceAll(before.data);
+                await l.replaceAll(before.data, before.rules);
                 await l.updateSettings(before.settings);
               });
             },
@@ -223,7 +316,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
 
       async exportBackup() {
-        const shared = await exportFiles(data, i18n.t('export.shareTitle'));
+        const shared = await exportFiles(data, rules, i18n.t('export.shareTitle'));
         if (!shared) return false;
         await write((l) => l.updateSettings({ lastBackupAt: Date.now(), changesSinceBackup: 0 }));
         showToast({ message: i18n.t('export.done') });
@@ -238,7 +331,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await write((l) => l.updateSettings(patch));
       },
     };
-  }, [ready, storageError, data, settings, toast, showToast, dismissToast, saveFailed, openingCheck, write, refresh]);
+  }, [ready, storageError, waitingForOtherCopy, data, rules, settings, toast, showToast, dismissToast, saveFailed, openingCheck, write, refresh, runRecurring]);
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }

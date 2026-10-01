@@ -168,3 +168,59 @@ test.describe('field size', () => {
     expect(style).toEqual({ appearance: 'none', minWidth: '0px', display: 'block' });
   });
 });
+
+/** Smallest font size across inputs, selects and textareas currently on the page. */
+async function smallestControlFontSize(page: Page): Promise<number> {
+  return page.evaluate(() =>
+    Math.min(...[...document.querySelectorAll('input, select, textarea')].map((el) => parseFloat(getComputedStyle(el).fontSize))),
+  );
+}
+
+test.describe('new screens on a small phone (320x568)', () => {
+  test.use({ viewport: { width: 320, height: 568 }, hasTouch: true, isMobile: true });
+
+  async function startAndAdd(page: Page) {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Start fresh' }).click();
+    await page.getByRole('button', { name: 'Skip' }).click();
+    await page.getByRole('button', { name: 'Add a Transaction' }).click();
+    await page.getByLabel('Amount', { exact: true }).fill('4.5');
+    await page.getByRole('button', { name: 'Groceries', exact: true }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'New Transaction' })).toHaveCount(0);
+  }
+
+  test('Search with every filter open fits the screen and uses at least 16px text', async ({ page }) => {
+    await startAndAdd(page);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Date' }).selectOption('custom');
+
+    expect(await hasNoHorizontalScroll(page)).toBe(true);
+    expect(await smallestControlFontSize(page)).toBeGreaterThanOrEqual(16);
+    for (const control of [page.getByRole('combobox', { name: 'Sort' }), page.getByRole('combobox', { name: 'Date' })]) {
+      const box = await control.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  test('the home list with its sort selector fits the screen', async ({ page }) => {
+    await startAndAdd(page);
+
+    expect(await hasNoHorizontalScroll(page)).toBe(true);
+    const box = await page.getByRole('combobox', { name: 'Sort' }).boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+  });
+
+  test('the add form with Repeat, End date and the Recent strip fits and has no small text', async ({ page }) => {
+    await startAndAdd(page);
+    await page.getByRole('button', { name: 'Add a Transaction' }).click();
+    await page.getByRole('combobox', { name: 'Repeat' }).selectOption('monthly');
+
+    await expect(page.getByLabel('Ends on (optional)')).toBeVisible();
+    expect(await hasNoHorizontalScroll(page)).toBe(true);
+    expect(await smallestControlFontSize(page)).toBeGreaterThanOrEqual(16);
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeInViewport({ ratio: 1 });
+  });
+});

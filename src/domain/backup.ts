@@ -1,5 +1,5 @@
 import { parseAmount, validateCategoryName } from './rules';
-import type { Category, LedgerData, Transaction, TxType } from './types';
+import type { Category, LedgerData, RecurringRule, Transaction, TxType } from './types';
 
 const BOM = '﻿';
 const EOL = '\r\n';
@@ -15,24 +15,46 @@ function formatCents(cents: number): string {
 export interface BackupFiles {
   transactionsCsv: string;
   categoriesCsv: string;
+  /** Written only when there is at least one recurring rule; optional on import. */
+  recurringCsv?: string | null;
 }
 
-export function exportBackup(data: LedgerData, nameOf: (category: Category) => string): BackupFiles {
+const RECURRING_HEADER = 'type,amount,categories,note,frequency,start_date,end_date,next_date';
+
+export function exportBackup(
+  data: LedgerData,
+  nameOf: (category: Category) => string,
+  rules: RecurringRule[] = [],
+): BackupFiles {
   const byId = new Map(data.categories.map((c) => [c.id, c]));
-  const rows = data.transactions.map((t) => {
-    const names = [
-      ...t.categoryIds.flatMap((id) => {
+  const namesOf = (categoryIds: string[], retired: string[]) =>
+    [
+      ...categoryIds.flatMap((id) => {
         const c = byId.get(id);
         return c ? [nameOf(c)] : [];
       }),
-      ...t.retired,
-    ];
-    return [t.date, t.type, formatCents(t.cents), names.join('|'), t.note].map(field).join(',');
-  });
+      ...retired,
+    ].join('|');
+
+  const ordered = [...data.transactions].sort(
+    (a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? 0) - (b.createdAt ?? 0),
+  );
+  const rows = ordered.map((t) =>
+    [t.date, t.type, formatCents(t.cents), namesOf(t.categoryIds, t.retired), t.note].map(field).join(','),
+  );
   const transactionsCsv = BOM + ['date,type,amount,categories,note', ...rows].join(EOL) + EOL;
+
   const categoryRows = data.categories.map((c) => [c.type, nameOf(c), c.defaultKey ?? ''].map(field).join(','));
   const categoriesCsv = BOM + ['type,name,default_key', ...categoryRows].join(EOL) + EOL;
-  return { transactionsCsv, categoriesCsv };
+
+  const recurringRows = rules.map((r) =>
+    [r.type, formatCents(r.cents), namesOf(r.categoryIds, r.retired), r.note, r.frequency, r.startDate, r.endDate ?? '', r.nextDate]
+      .map(field)
+      .join(','),
+  );
+  const recurringCsv = rules.length === 0 ? null : BOM + [RECURRING_HEADER, ...recurringRows].join(EOL) + EOL;
+
+  return { transactionsCsv, categoriesCsv, recurringCsv };
 }
 
 /** Minimal RFC 4180 reader: quoted fields, doubled quotes, CRLF or LF, optional BOM. */
@@ -69,13 +91,22 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-export type ImportErrorReason = 'invalidDate' | 'invalidType' | 'invalidAmount' | 'noCategories' | 'invalidName' | 'duplicateName';
+export type ImportErrorReason =
+  | 'invalidDate'
+  | 'invalidType'
+  | 'invalidAmount'
+  | 'noCategories'
+  | 'invalidName'
+  | 'duplicateName'
+  | 'invalidFrequency'
+  | 'invalidDateRange';
 
 export interface ImportPreview {
   data: LedgerData;
-  errors: Array<{ file: 'transactions' | 'categories'; row: number; reason: ImportErrorReason }>;
+  rules: RecurringRule[];
+  errors: Array<{ file: 'transactions' | 'categories' | 'recurring'; row: number; reason: ImportErrorReason }>;
   /** Set when a file's header is wrong; nothing is imported. */
-  fatal?: 'transactionsColumns' | 'categoriesColumns';
+  fatal?: 'transactionsColumns' | 'categoriesColumns' | 'recurringColumns';
 }
 
 const fold = (s: string) => s.trim().toLowerCase();
@@ -94,12 +125,17 @@ export function previewImport(files: BackupFiles, newId: () => string = () => cr
   const empty: LedgerData = { categories: [], transactions: [] };
   const transactionRows = parseCsv(files.transactionsCsv);
   if (transactionRows[0]?.join(',') !== TRANSACTION_HEADER.join(',')) {
-    return { data: empty, errors: [], fatal: 'transactionsColumns' };
+    return { data: empty, rules: [], errors: [], fatal: 'transactionsColumns' };
   }
 
   const categoryRows = parseCsv(files.categoriesCsv);
   if (categoryRows[0]?.join(',') !== CATEGORY_HEADER.join(',')) {
-    return { data: empty, errors: [], fatal: 'categoriesColumns' };
+    return { data: empty, rules: [], errors: [], fatal: 'categoriesColumns' };
+  }
+
+  const recurringRows = files.recurringCsv ? parseCsv(files.recurringCsv) : [];
+  if (recurringRows.length > 0 && recurringRows[0]?.join(',') !== RECURRING_HEADER) {
+    return { data: empty, rules: [], errors: [], fatal: 'recurringColumns' };
   }
 
   const errors: ImportPreview['errors'] = [];
@@ -137,8 +173,33 @@ export function previewImport(files: BackupFiles, newId: () => string = () => cr
       else retired.push(name);
     }
     if (categoryIds.length + retired.length === 0) return fail('noCategories');
-    transactions.push({ id: newId(), date, type, cents, categoryIds, retired, note: note ?? '' });
+    transactions.push({ id: newId(), date, type, cents, categoryIds, retired, note: note ?? '', createdAt: transactions.length });
   });
 
-  return { data: { categories, transactions }, errors };
+  const rules: RecurringRule[] = [];
+  recurringRows.slice(1).forEach(([type, amount, names, note, frequency, startDate, endDate, nextDate], index) => {
+    const row = index + 2;
+    const fail = (reason: ImportErrorReason) => errors.push({ file: 'recurring', row, reason });
+    if (type !== 'expense' && type !== 'income') return fail('invalidType');
+    const cents = parseAmount(amount ?? '');
+    if (cents === null) return fail('invalidAmount');
+    if (frequency !== 'weekly' && frequency !== 'monthly' && frequency !== 'yearly') return fail('invalidFrequency');
+    const next = nextDate ? nextDate : (startDate ?? '');
+    if (!isRealDate(startDate ?? '') || !isRealDate(next) || (endDate && !isRealDate(endDate))) return fail('invalidDate');
+    if (endDate && endDate < startDate!) return fail('invalidDateRange');
+    const categoryIds: string[] = [];
+    const retired: string[] = [];
+    for (const name of (names ?? '').split('|').map((n) => n.trim()).filter(Boolean)) {
+      const id = idByName.get(type + ':' + fold(name));
+      if (id) categoryIds.push(id);
+      else retired.push(name);
+    }
+    if (categoryIds.length + retired.length === 0) return fail('noCategories');
+    rules.push({
+      id: newId(), type, cents, categoryIds, retired, note: note ?? '', frequency,
+      startDate: startDate!, endDate: endDate ? endDate : null, nextDate: next,
+    });
+  });
+
+  return { data: { categories, transactions }, rules, errors };
 }

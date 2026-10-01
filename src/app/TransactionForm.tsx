@@ -1,29 +1,58 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { parseAmount, type NameError } from '../domain/rules';
-import type { Transaction, TxType } from '../domain/types';
+import { sortTransactions } from '../domain/search';
+import type { Frequency, Transaction, TxType } from '../domain/types';
 import { categoryName } from '../i18n';
-import { centsToInput, todayISO } from './format';
+import { centsToInput, formatMoney, todayISO } from './format';
+import { frequencyLabel, RuleDialog } from './RecurringScreen';
 import { useStore } from './store';
+import { Dialog } from './ui';
 
-export function TransactionForm({ transaction, onClose }: { transaction?: Transaction; onClose: () => void }) {
+/** Values copied into a new Transaction by Duplicate or a Recent chip (the date is always today). */
+export interface Prefill {
+  type: TxType;
+  cents: number;
+  categoryIds: string[];
+  note: string;
+}
+
+const FREQUENCIES: Frequency[] = ['weekly', 'monthly', 'yearly'];
+
+interface Props {
+  transaction?: Transaction;
+  prefill?: Prefill;
+  onClose: () => void;
+  onDuplicate: (prefill: Prefill) => void;
+}
+
+export function TransactionForm({ transaction, prefill, onClose, onDuplicate }: Props) {
   const { t } = useTranslation();
   const store = useStore();
+  const { language } = store;
   const editing = transaction !== undefined;
+  const liveIds = useMemo(() => new Set(store.data.categories.map((c) => c.id)), [store.data.categories]);
+  const source = transaction ?? prefill;
 
-  const [type, setType] = useState<TxType>(transaction?.type ?? 'expense');
-  const [amount, setAmount] = useState(transaction ? centsToInput(transaction.cents) : '');
+  const [type, setType] = useState<TxType>(source?.type ?? 'expense');
+  const [amount, setAmount] = useState(source ? centsToInput(source.cents) : '');
   const [date, setDate] = useState(transaction?.date ?? todayISO());
-  const [note, setNote] = useState(transaction?.note ?? '');
-  const [selected, setSelected] = useState<string[]>(transaction?.categoryIds ?? []);
+  const [note, setNote] = useState(source?.note ?? '');
+  const [selected, setSelected] = useState<string[]>((source?.categoryIds ?? []).filter((id) => liveIds.has(id)));
   const [retired, setRetired] = useState<string[]>(transaction?.retired ?? []);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [nameError, setNameError] = useState<NameError | null>(null);
   const [saving, setSaving] = useState(false);
+  const [repeat, setRepeat] = useState<Frequency | 'never'>('never');
+  const [repeatEnd, setRepeatEnd] = useState('');
+  const [editingRule, setEditingRule] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
+  const rule = transaction?.ruleId ? store.rules.find((r) => r.id === transaction.ruleId) : undefined;
   const cents = parseAmount(amount);
-  const canSave = cents !== null && selected.length + retired.length > 0 && date !== '' && !saving;
+  const repeatEndOk = repeat === 'never' || repeatEnd === '' || repeatEnd >= date;
+  const canSave = cents !== null && selected.length + retired.length > 0 && date !== '' && repeatEndOk && !saving;
 
   // Picker order: most recently used first.
   const choices = useMemo(
@@ -31,11 +60,38 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
     [store.data.categories, type],
   );
 
+  // The last five different Transactions, for one-tap re-entry. Retired labels are never copied.
+  const recents = useMemo(() => {
+    if (editing) return [];
+    const seen = new Set<string>();
+    const out: Array<{ tx: Transaction; live: string[] }> = [];
+    for (const tx of sortTransactions(store.data.transactions, 'newest')) {
+      const live = tx.categoryIds.filter((id) => liveIds.has(id));
+      if (live.length === 0) continue;
+      const key = [tx.type, tx.cents, tx.note, live.join()].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ tx, live });
+      if (out.length === 5) break;
+    }
+    return out;
+  }, [editing, store.data.transactions, liveIds]);
+
   function switchType(next: TxType) {
     if (next === type) return;
     setType(next);
     setSelected([]);
     setRetired([]);
+    setAdding(false);
+    setNameError(null);
+  }
+
+  function useRecent(tx: Transaction, live: string[]) {
+    setType(tx.type);
+    setAmount(centsToInput(tx.cents));
+    setSelected(live);
+    setRetired([]);
+    setNote(tx.note);
     setAdding(false);
     setNameError(null);
   }
@@ -57,9 +113,10 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
     if (!canSave || cents === null) return;
     setSaving(true);
     const input = { date, type, cents, categoryIds: selected, retired, note: note.trim() };
+    const schedule = !rule && repeat !== 'never' ? { frequency: repeat, endDate: repeatEnd === '' ? null : repeatEnd } : undefined;
     const ok = editing
-      ? await store.updateTransaction(transaction.id, input)
-      : await store.addTransaction(input);
+      ? await store.updateTransaction(transaction.id, input, schedule)
+      : await store.addTransaction(input, schedule);
     setSaving(false);
     if (ok) onClose();
   }
@@ -67,6 +124,12 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
   async function remove() {
     if (!editing) return;
     await store.deleteTransaction(transaction.id);
+    onClose();
+  }
+
+  async function stopRepeating() {
+    if (!rule) return;
+    await store.stopRule(rule.id);
     onClose();
   }
 
@@ -94,87 +157,157 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
       </div>
 
       <div className="form-body">
-      <label className="amount-box">
-        <span className="muted">€</span>
-        <input
-          autoFocus
-          inputMode="decimal"
-          autoComplete="off"
-          placeholder="0.00"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          aria-label={t('form.amount')}
-        />
-      </label>
+        {recents.length > 0 && (
+          <div className="recent">
+            <div className="label">
+              {t('form.recent')} <span className="hint">({t('form.recentHelp')})</span>
+            </div>
+            <div className="recent-chips">
+              {recents.map(({ tx, live }) => {
+                const first = store.data.categories.find((c) => c.id === live[0]);
+                return (
+                  <button key={tx.id} className="chip recent-chip" onClick={() => useRecent(tx, live)}>
+                    {tx.note || (first ? categoryName(first) : '')} · {formatMoney(tx.cents, language)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
-      <div className="label">
-        {t('form.categories')} <span className="hint">({t('form.pickHint')})</span>
-      </div>
-      <div className="chips">
-        {retired.map((name) => (
-          <button
-            key={`r:${name}`}
-            className="chip sel retired"
-            title={t('form.retiredHint')}
-            onClick={() => setRetired((current) => current.filter((x) => x !== name))}
-          >
-            {name} ✕
-          </button>
-        ))}
-        {choices.map((c) => (
-          <button
-            key={c.id}
-            className={`chip ${selected.includes(c.id) ? 'sel' : ''}`}
-            aria-pressed={selected.includes(c.id)}
-            onClick={() => toggle(c.id)}
-          >
-            {categoryName(c)}
-          </button>
-        ))}
-        <button className="chip add" onClick={() => setAdding((v) => !v)}>
-          {t('form.newCategory')}
-        </button>
-      </div>
-      {adding && (
-        <div className="inline-add">
+        <label className="amount-box">
+          <span className="muted">€</span>
           <input
             autoFocus
-            value={newName}
-            maxLength={40}
-            placeholder={t('form.newCategoryPlaceholder')}
-            aria-label={t('form.newCategoryPlaceholder')}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void addCategory()}
+            inputMode="decimal"
+            autoComplete="off"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            aria-label={t('form.amount')}
           />
-          <button className="chip sel" onClick={() => void addCategory()}>
-            {t('common.add')}
+        </label>
+
+        <div className="label">
+          {t('form.categories')} <span className="hint">({t('form.pickHint')})</span>
+        </div>
+        <div className="chips">
+          {retired.map((name) => (
+            <button
+              key={`r:${name}`}
+              className="chip sel retired"
+              title={t('form.retiredHint')}
+              onClick={() => setRetired((current) => current.filter((x) => x !== name))}
+            >
+              {name} ✕
+            </button>
+          ))}
+          {choices.map((c) => (
+            <button
+              key={c.id}
+              className={`chip ${selected.includes(c.id) ? 'sel' : ''}`}
+              aria-pressed={selected.includes(c.id)}
+              onClick={() => toggle(c.id)}
+            >
+              {categoryName(c)}
+            </button>
+          ))}
+          <button className="chip add" onClick={() => setAdding((v) => !v)}>
+            {t('form.newCategory')}
           </button>
         </div>
-      )}
-      {nameError && <div className="error">{t(`categories.errors.${nameError}`)}</div>}
+        {adding && (
+          <div className="inline-add">
+            <input
+              autoFocus
+              value={newName}
+              maxLength={40}
+              placeholder={t('form.newCategoryPlaceholder')}
+              aria-label={t('form.newCategoryPlaceholder')}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void addCategory()}
+            />
+            <button className="chip sel" onClick={() => void addCategory()}>
+              {t('common.add')}
+            </button>
+          </div>
+        )}
+        {nameError && <div className="error">{t(`categories.errors.${nameError}`)}</div>}
 
-      <div className="row-fields">
-        <label className="field">
-          <span>{t('form.date')}</span>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>{t('form.note')}</span>
-          <input
-            value={note}
-            placeholder={t('form.notePlaceholder')}
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </label>
-      </div>
+        <div className="row-fields">
+          <label className="field">
+            <span>{t('form.date')}</span>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>{t('form.note')}</span>
+            <input value={note} placeholder={t('form.notePlaceholder')} onChange={(e) => setNote(e.target.value)} />
+          </label>
 
+          {rule ? (
+            <div className="rule-info">
+              <b>{t('recurring.repeats', { frequency: frequencyLabel(rule.frequency, t).toLowerCase() })}</b>
+              <div className="rule-actions">
+                <button className="btn" onClick={() => setEditingRule(true)}>
+                  {t('recurring.editRule')}
+                </button>
+                <button className="btn danger-outline" onClick={() => setStopping(true)}>
+                  {t('recurring.stopRepeating')}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label className="field">
+                <span>{t('recurring.repeat')}</span>
+                <select value={repeat} onChange={(e) => setRepeat(e.target.value as Frequency | 'never')} aria-label={t('recurring.repeat')}>
+                  <option value="never">{t('recurring.never')}</option>
+                  {FREQUENCIES.map((f) => (
+                    <option key={f} value={f}>
+                      {frequencyLabel(f, t)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {repeat !== 'never' && (
+                <label className="field">
+                  <span>{t('recurring.endDate')}</span>
+                  <input type="date" value={repeatEnd} min={date} onChange={(e) => setRepeatEnd(e.target.value)} aria-label={t('recurring.endDate')} />
+                </label>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       <div className="form-foot">
+        {editing && (
+          <button
+            className="btn"
+            onClick={() => onDuplicate({ type: transaction.type, cents: transaction.cents, categoryIds: transaction.categoryIds, note: transaction.note })}
+          >
+            {t('form.duplicate')}
+          </button>
+        )}
         <button className="btn primary wide" disabled={!canSave} onClick={() => void save()}>
           {editing ? t('form.saveChanges') : t('common.save')}
         </button>
       </div>
+
+      {editingRule && rule && <RuleDialog rule={rule} onClose={() => setEditingRule(false)} />}
+      {stopping && (
+        <Dialog title={t('recurring.stopTitle')} onClose={() => setStopping(false)}>
+          <p>{t('recurring.stopBody')}</p>
+          <div className="dialog-actions">
+            <button className="btn" onClick={() => setStopping(false)}>
+              {t('common.cancel')}
+            </button>
+            <button className="btn danger" onClick={() => void stopRepeating()}>
+              {t('recurring.stopRepeating')}
+            </button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }

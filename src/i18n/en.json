@@ -1,5 +1,9 @@
 {
-  "app": { "name": "Money Tracker" },
+  "app": {
+    "name": "Money Tracker",
+    "updating": "Finishing the update",
+    "updatingBody": "Close Money Tracker in any other tab or window, then it will continue by itself."
+  },
   "common": {
     "cancel": "Cancel",
     "save": "Save",
@@ -38,7 +42,9 @@
     "emptyNone": "Nothing here yet. Tap + to add your first expense or income.",
     "emptyMonth": "No Transactions this month. Tap + to add one.",
     "emptySummary": "Add a Transaction to see this month's summary.",
-    "retiredTag": "retired"
+    "retiredTag": "retired",
+    "search": "Search",
+    "sort": "Sort"
   },
   "summary": {
     "income": "Income",
@@ -66,7 +72,10 @@
     "saveChanges": "Save changes",
     "deleted": "Transaction deleted",
     "saveFailedTitle": "Not saved",
-    "saveFailedBody": "This change could not be saved on this device. Back up your data now so you don't lose it."
+    "saveFailedBody": "This change could not be saved on this device. Back up your data now so you don't lose it.",
+    "duplicate": "Duplicate",
+    "recent": "Recent",
+    "recentHelp": "Tap to copy"
   },
   "categories": {
     "title": "Categories",
@@ -121,7 +130,9 @@
     "eraseExportFirst": "Export first",
     "eraseConfirm": "Erase everything",
     "privacy": "Your data stays on this device.",
-    "version": "Version {{version}}"
+    "version": "Version {{version}}",
+    "recurring": "Recurring",
+    "recurringHelp": "Rent, salary, subscriptions and other Transactions that repeat."
   },
   "banner": {
     "backupTitle_one": "{{count}} change not backed up",
@@ -143,7 +154,7 @@
   "import": {
     "title": "Import a backup",
     "chooseFiles": "Choose the two backup files",
-    "chooseHelp": "Select both transactions CSV and categories CSV together.",
+    "chooseHelp": "Select the Transactions and Categories files together. A Recurring file is optional.",
     "needBoth": "Select both files: one with Transactions and one with Categories.",
     "unreadable": "A file could not be read.",
     "previewTitle": "Ready to import",
@@ -162,17 +173,81 @@
       "invalidAmount": "amount must be above zero with at most 2 decimals",
       "noCategories": "no Category given",
       "invalidName": "Category name is not valid",
-      "duplicateName": "Category name is a duplicate"
+      "duplicateName": "Category name is a duplicate",
+      "invalidFrequency": "frequency must be weekly, monthly or yearly",
+      "invalidDateRange": "the end date is before the start date"
     },
     "fatal": {
       "transactionsColumns": "The Transactions file does not have the expected columns (date, type, amount, categories, note).",
-      "categoriesColumns": "The Categories file does not have the expected columns (type, name, default_key)."
+      "categoriesColumns": "The Categories file does not have the expected columns (type, name, default_key).",
+      "recurringColumns": "The Recurring file does not have the expected columns (type, amount, categories, note, frequency, start_date, end_date, next_date)."
     },
     "openingCheckTitle": "Check your opening balance",
-    "openingCheckBody": "The opening balance is not stored in the backup files, so please check it."
+    "openingCheckBody": "The opening balance is not stored in the backup files, so please check it.",
+    "fileRecurring": "Recurring",
+    "rulesToImport_one": "{{count}} recurring rule will also be restored.",
+    "rulesToImport_other": "{{count}} recurring rules will also be restored."
   },
   "export": {
     "shareTitle": "Money Tracker backup",
     "done": "Backup saved. Keep the files somewhere outside the browser."
+  },
+  "sort": {
+    "label": "Sort",
+    "newest": "Newest first",
+    "oldest": "Oldest first",
+    "largest": "Largest amount",
+    "smallest": "Smallest amount"
+  },
+  "search": {
+    "title": "Search",
+    "placeholder": "Search notes, Categories, amounts",
+    "type": "Type",
+    "all": "All",
+    "expenses": "Expenses",
+    "income": "Income",
+    "categories": "Categories",
+    "anyCategory": "Any Category",
+    "selectedCategories_one": "{{count}} Category",
+    "selectedCategories_other": "{{count}} Categories",
+    "chooseCategories": "Choose Categories",
+    "expenseCategories": "Expense Categories",
+    "incomeCategories": "Income Categories",
+    "date": "Date",
+    "thisMonth": "This month",
+    "lastMonth": "Last month",
+    "thisYear": "This year",
+    "allTime": "All time",
+    "custom": "Custom",
+    "from": "From",
+    "to": "To",
+    "count_one": "{{count}} Transaction",
+    "count_other": "{{count}} Transactions",
+    "net": "net {{amount}}",
+    "empty": "No Transactions match.",
+    "clear": "Clear filters",
+    "done": "Done"
+  },
+  "recurring": {
+    "title": "Recurring",
+    "added_one": "{{count}} recurring Transaction added",
+    "added_other": "{{count}} recurring Transactions added",
+    "empty": "No recurring Transactions yet. Turn on Repeat when you add one.",
+    "repeat": "Repeat",
+    "never": "Never",
+    "weekly": "Weekly",
+    "monthly": "Monthly",
+    "yearly": "Yearly",
+    "endDate": "Ends on (optional)",
+    "repeats": "↻ Repeats {{frequency}}",
+    "editRule": "Edit rule",
+    "stopRepeating": "Stop repeating",
+    "stopTitle": "Stop repeating?",
+    "stopBody": "No more Transactions will be created. The ones already created are kept.",
+    "next": "Next: {{date}}",
+    "ended": "Ended",
+    "ruleTitle": "Recurring Transaction",
+    "ruleHelp": "Changes apply to future Transactions only.",
+    "mark": "Repeats"
   }
 }

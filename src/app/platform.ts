@@ -1,5 +1,5 @@
 import { exportBackup, type BackupFiles } from '../domain/backup';
-import type { LedgerData } from '../domain/types';
+import type { LedgerData, RecurringRule } from '../domain/types';
 import { categoryName } from '../i18n';
 
 export function isIos(): boolean {
@@ -39,7 +39,7 @@ function stamp(now: Date): string {
 
 export function backupFileNames(now: Date = new Date()) {
   const day = stamp(now);
-  return { transactions: `transactions-${day}.csv`, categories: `categories-${day}.csv` };
+  return { transactions: `transactions-${day}.csv`, categories: `categories-${day}.csv`, recurring: `recurring-${day}.csv` };
 }
 
 function download(file: File): void {
@@ -58,12 +58,14 @@ function download(file: File): void {
  * (so they can land in Files, iCloud Drive or Google Drive), otherwise as two downloads.
  * Returns false when the user dismissed the share sheet.
  */
-export async function exportFiles(data: LedgerData, shareTitle: string): Promise<boolean> {
-  const files: BackupFiles = exportBackup(data, categoryName);
+export async function exportFiles(data: LedgerData, rules: RecurringRule[], shareTitle: string): Promise<boolean> {
+  const files: BackupFiles = exportBackup(data, categoryName, rules);
   const names = backupFileNames();
   const list = [
     new File([files.transactionsCsv], names.transactions, { type: 'text/csv' }),
     new File([files.categoriesCsv], names.categories, { type: 'text/csv' }),
+    // Only when there is at least one recurring rule.
+    ...(files.recurringCsv ? [new File([files.recurringCsv], names.recurring, { type: 'text/csv' })] : []),
   ];
   if (navigator.canShare?.({ files: list })) {
     try {
