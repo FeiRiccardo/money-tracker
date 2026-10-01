@@ -36,3 +36,7 @@ npm run test:e2e                  # browser tests (Playwright; builds and serves
 ## Hosting
 
 Static files only. Upload `dist/` to any HTTPS static host (Cloudflare Pages, GitHub Pages). HTTPS is required for install, offline use and storage persistence.
+
+## License
+
+[MIT](LICENSE), copyright (c) 2026 Riccardo Fei.
