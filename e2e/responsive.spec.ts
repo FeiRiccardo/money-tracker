@@ -87,3 +87,84 @@ for (const [name, width, height] of [
     });
   });
 }
+
+for (const width of [320, 375, 390, 430]) {
+  test.describe(`phone ${width}px wide: fields`, () => {
+    test.use({ viewport: { width, height: 800 } });
+
+    test('Date and Note have the same width and line up exactly with the Save button', async ({ page }) => {
+      await openFilledForm(page);
+
+      const date = await page.getByLabel('Date').boundingBox();
+      const note = await page.getByPlaceholder('e.g. Coffee').boundingBox();
+      const save = await page.getByRole('button', { name: 'Save', exact: true }).boundingBox();
+      for (const box of [date!, note!]) {
+        expect(Math.abs(box.x - save!.x)).toBeLessThan(1);
+        expect(Math.abs(box.x + box.width - (save!.x + save!.width))).toBeLessThan(1);
+      }
+    });
+  });
+}
+
+/** Phones zoom into any input whose text is under 16px when it is tapped. */
+async function smallestInputFontSize(page: Page): Promise<number> {
+  return page.evaluate(() =>
+    Math.min(...[...document.querySelectorAll('input')].map((el) => parseFloat(getComputedStyle(el).fontSize))),
+  );
+}
+
+test.describe('no tap-to-zoom on phones', () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+
+  test('every input in the add form, including the new-Category box, is at least 16px', async ({ page }) => {
+    await openFilledForm(page);
+    await page.getByRole('button', { name: '+ New' }).click();
+
+    expect(await smallestInputFontSize(page)).toBeGreaterThanOrEqual(16);
+  });
+
+  test('the Settings dialogs (opening balance, Category name) use at least 16px too', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Start fresh' }).click();
+    await page.getByRole('button', { name: 'Skip' }).click();
+    await page.getByRole('button', { name: 'Settings' }).click();
+
+    await page.getByRole('button', { name: /^Opening balance/ }).click();
+    expect(await smallestInputFontSize(page)).toBeGreaterThanOrEqual(16);
+    await page.getByRole('button', { name: 'Cancel' }).click();
+
+    await page.getByRole('button', { name: /^Categories/ }).click();
+    await page.getByRole('button', { name: '+ New category' }).click();
+    expect(await smallestInputFontSize(page)).toBeGreaterThanOrEqual(16);
+  });
+
+  test('the first-run starting balance field is at least 16px', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Start fresh' }).click();
+
+    expect(await smallestInputFontSize(page)).toBeGreaterThanOrEqual(16);
+  });
+});
+
+test.describe('field size', () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+
+  test('Date and Note are the same height and big enough to tap (44px)', async ({ page }) => {
+    await openFilledForm(page);
+
+    const date = await page.getByLabel('Date').boundingBox();
+    const note = await page.getByPlaceholder('e.g. Coffee').boundingBox();
+    expect(date!.height).toBeGreaterThanOrEqual(44);
+    expect(Math.abs(date!.height - note!.height)).toBeLessThan(1);
+  });
+
+  test('the date field drops the browser\'s native sizing so it obeys the page width', async ({ page }) => {
+    await openFilledForm(page);
+
+    const style = await page.getByLabel('Date').evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { appearance: s.appearance, minWidth: s.minWidth, display: s.display };
+    });
+    expect(style).toEqual({ appearance: 'none', minWidth: '0px', display: 'block' });
+  });
+});
