@@ -187,7 +187,9 @@ export function Home({ onAdd, onEdit, onSettings, onSearch }: HomeProps) {
       </div>
 
       <button className="fab" aria-label={t('home.add')} onClick={onAdd}>
-        +
+        <svg className="fab-icon" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+        </svg>
       </button>
     </div>
   );

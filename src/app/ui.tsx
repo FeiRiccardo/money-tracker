@@ -20,22 +20,45 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
   );
 }
 
+const ICON = { success: '✓', info: 'i', error: '!' } as const;
+
+/** Up to three toasts, newest at the bottom. A toast waits while it is held, hovered or focused. */
 export function ToastView() {
-  const { toast, dismissToast } = useStore();
-  if (!toast) return null;
+  const { t } = useTranslation();
+  const { toasts, dismissToast, pauseToast, resumeToast } = useStore();
+  if (toasts.length === 0) return null;
   return (
-    <div className="toast" role="status">
-      <span>{toast.message}</span>
-      {toast.onAction && (
-        <button className="toast-action" onClick={toast.onAction}>
-          {toast.actionLabel}
-        </button>
-      )}
-      {!toast.onAction && (
-        <button className="toast-action" onClick={dismissToast}>
-          ✕
-        </button>
-      )}
+    <div className="toasts">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={'toast ' + toast.kind}
+          role={toast.kind === 'error' ? 'alert' : 'status'}
+          onPointerEnter={() => pauseToast(toast.id)}
+          onPointerLeave={() => resumeToast(toast.id)}
+          onFocus={() => pauseToast(toast.id)}
+          onBlur={() => resumeToast(toast.id)}
+        >
+          <span className="toast-icon" aria-hidden="true">
+            {ICON[toast.kind]}
+          </span>
+          <span className="toast-text">{toast.message}</span>
+          {toast.onAction && (
+            <button
+              className="toast-action"
+              onClick={() => {
+                toast.onAction?.();
+                dismissToast(toast.id);
+              }}
+            >
+              {toast.actionLabel}
+            </button>
+          )}
+          <button className="toast-close" aria-label={t('toast.dismiss')} onClick={() => dismissToast(toast.id)}>
+            ✕
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

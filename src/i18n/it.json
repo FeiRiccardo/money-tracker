@@ -256,5 +256,20 @@
     "ruleTitle": "Transazione ricorrente",
     "ruleHelp": "Le modifiche valgono solo per le transazioni future.",
     "mark": "Ricorrente"
+  },
+  "toast": {
+    "added": "Aggiunta · {{what}} · {{amount}}",
+    "updated": "Modificata · {{what}} · {{amount}}",
+    "deleted": "Eliminata · {{what}} · {{amount}}",
+    "categoryCreated": "Categoria “{{name}}” creata",
+    "categoryRenamed": "Categoria rinominata in “{{name}}”",
+    "categoryDeleted": "Categoria “{{name}}” eliminata",
+    "repeatSet": "Si ripete {{frequency}}: {{what}}",
+    "ruleUpdated": "Transazione ricorrente aggiornata: {{what}}",
+    "ruleStopped": "Non si ripete più: {{what}}",
+    "openingSaved": "Saldo iniziale salvato",
+    "erased": "Tutti i dati cancellati",
+    "exportFailed": "Esportazione non riuscita. Riprova.",
+    "dismiss": "Chiudi"
   }
 }

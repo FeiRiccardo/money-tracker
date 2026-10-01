@@ -224,3 +224,83 @@ test.describe('new screens on a small phone (320x568)', () => {
     await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeInViewport({ ratio: 1 });
   });
 });
+
+test.describe('the + button', () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+
+  test('has its plus icon exactly in the centre of the circle', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Start fresh' }).click();
+    await page.getByRole('button', { name: 'Skip' }).click();
+
+    const button = await page.getByRole('button', { name: 'Add a Transaction' }).boundingBox();
+    const icon = await page.locator('.fab .fab-icon').boundingBox();
+
+    expect(button!.width).toBeCloseTo(button!.height, 0); // a circle
+    expect(Math.abs(icon!.x + icon!.width / 2 - (button!.x + button!.width / 2))).toBeLessThan(0.5);
+    expect(Math.abs(icon!.y + icon!.height / 2 - (button!.y + button!.height / 2))).toBeLessThan(0.5);
+  });
+});
+
+for (const [name, width, height] of [
+  ['phone (390x844)', 390, 844],
+  ['small phone (320x568)', 320, 568],
+  ['landscape phone (568x320)', 568, 320],
+] as const) {
+  test.describe(`toasts on a ${name}`, () => {
+    test.use({ viewport: { width, height }, hasTouch: true, isMobile: true });
+
+    async function open(page: Page) {
+      await page.goto('/');
+      await page.getByRole('button', { name: 'Start fresh' }).click();
+      await page.getByRole('button', { name: 'Skip' }).click();
+    }
+
+    test('stay on screen and do not cover the Save button while a form is open', async ({ page }) => {
+      await open(page);
+      await page.getByRole('button', { name: 'Add a Transaction' }).click();
+      await page.getByLabel('Amount', { exact: true }).fill('5');
+      await page.getByRole('button', { name: '+ New' }).click();
+      await page.getByPlaceholder('New Category name').fill('Gym');
+      await page.getByRole('button', { name: 'Add', exact: true }).click();
+
+      const toast = await page.getByRole('status').filter({ hasText: 'Category “Gym” created' }).boundingBox();
+      const save = await page.getByRole('button', { name: 'Save', exact: true }).boundingBox();
+      expect(toast!.x).toBeGreaterThanOrEqual(0);
+      expect(toast!.x + toast!.width).toBeLessThanOrEqual(width);
+      expect(toast!.y + toast!.height).toBeLessThanOrEqual(save!.y); // above Save, not over it
+      expect(await hasNoHorizontalScroll(page)).toBe(true);
+    });
+
+    test('three stacked toasts still fit above the Save button', async ({ page }) => {
+      await open(page);
+      await page.getByRole('button', { name: 'Add a Transaction' }).click();
+      for (const label of ['One', 'Two', 'Three']) {
+        await page.getByRole('button', { name: '+ New' }).click();
+        await page.getByPlaceholder('New Category name').fill(label);
+        await page.getByRole('button', { name: 'Add', exact: true }).click();
+      }
+
+      const toasts = page.getByRole('status');
+      await expect(toasts).toHaveCount(3);
+      const first = await toasts.first().boundingBox();
+      const last = await toasts.last().boundingBox();
+      const save = await page.getByRole('button', { name: 'Save', exact: true }).boundingBox();
+      expect(last!.y + last!.height).toBeLessThanOrEqual(save!.y);
+      expect(first!.y).toBeGreaterThanOrEqual(0); // the top of the stack is still on screen
+    });
+
+    test('on the home screen sit above the + button', async ({ page }) => {
+      await open(page);
+      await page.getByRole('button', { name: 'Settings' }).click();
+      await page.getByRole('button', { name: /^Opening balance/ }).click();
+      await page.getByRole('dialog').getByRole('textbox').fill('5');
+      await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+
+      const toast = await page.getByRole('status').filter({ hasText: 'Opening balance saved' }).boundingBox();
+      const fab = await page.getByRole('button', { name: 'Add a Transaction' }).boundingBox();
+      expect(toast!.y + toast!.height).toBeLessThanOrEqual(fab!.y);
+    });
+  });
+}

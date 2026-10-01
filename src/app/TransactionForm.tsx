@@ -44,6 +44,8 @@ export function TransactionForm({ transaction, prefill, onClose, onDuplicate }: 
   const [newName, setNewName] = useState('');
   const [nameError, setNameError] = useState<NameError | null>(null);
   const [saving, setSaving] = useState(false);
+  /** A new Category is being saved: ignore further taps so it is neither created twice nor reopened by mistake. */
+  const [creating, setCreating] = useState(false);
   const [repeat, setRepeat] = useState<Frequency | 'never'>('never');
   const [repeatEnd, setRepeatEnd] = useState('');
   const [editingRule, setEditingRule] = useState(false);
@@ -100,13 +102,19 @@ export function TransactionForm({ transaction, prefill, onClose, onDuplicate }: 
     setSelected((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
 
   async function addCategory() {
-    const result = await store.createCategory(type, newName);
-    if (result.ok) {
-      setSelected((current) => [...current, result.category.id]);
-      setAdding(false);
-      setNewName('');
-      setNameError(null);
-    } else setNameError(result.reason);
+    if (creating) return;
+    setCreating(true);
+    try {
+      const result = await store.createCategory(type, newName);
+      if (result.ok) {
+        setSelected((current) => [...current, result.category.id]);
+        setAdding(false);
+        setNewName('');
+        setNameError(null);
+      } else setNameError(result.reason);
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function save() {
@@ -212,7 +220,7 @@ export function TransactionForm({ transaction, prefill, onClose, onDuplicate }: 
               {categoryName(c)}
             </button>
           ))}
-          <button className="chip add" onClick={() => setAdding((v) => !v)}>
+          <button className="chip add" disabled={creating} onClick={() => setAdding((v) => !v)}>
             {t('form.newCategory')}
           </button>
         </div>
@@ -227,7 +235,7 @@ export function TransactionForm({ transaction, prefill, onClose, onDuplicate }: 
               onChange={(e) => setNewName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void addCategory()}
             />
-            <button className="chip sel" onClick={() => void addCategory()}>
+            <button className="chip sel" disabled={creating} onClick={() => void addCategory()}>
               {t('common.add')}
             </button>
           </div>

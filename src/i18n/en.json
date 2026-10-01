@@ -249,5 +249,20 @@
     "ruleTitle": "Recurring Transaction",
     "ruleHelp": "Changes apply to future Transactions only.",
     "mark": "Repeats"
+  },
+  "toast": {
+    "added": "Added · {{what}} · {{amount}}",
+    "updated": "Updated · {{what}} · {{amount}}",
+    "deleted": "Deleted · {{what}} · {{amount}}",
+    "categoryCreated": "Category “{{name}}” created",
+    "categoryRenamed": "Category renamed to “{{name}}”",
+    "categoryDeleted": "Category “{{name}}” deleted",
+    "repeatSet": "Repeats {{frequency}}: {{what}}",
+    "ruleUpdated": "Recurring Transaction updated: {{what}}",
+    "ruleStopped": "Stopped repeating: {{what}}",
+    "openingSaved": "Opening balance saved",
+    "erased": "All data erased",
+    "exportFailed": "Export failed. Please try again.",
+    "dismiss": "Dismiss"
   }
 }

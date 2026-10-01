@@ -550,3 +550,28 @@ describe('an older copy of the app still has the database open', () => {
     expect((await ledger.load()).rules).toEqual([]);
   });
 });
+
+describe('undoing an add', () => {
+  it('removes the Transaction that was just added and gives back the change count', async () => {
+    const { ledger, groceries } = await ledgerWithOneTransaction();
+    const before = await ledger.load();
+    const added = await ledger.addTransaction({
+      date: '2026-10-20', type: 'expense', cents: 450, categoryIds: [groceries.id], retired: [], note: 'oops',
+    });
+
+    await ledger.undoAddTransaction(added.id);
+    const after = await ledger.load();
+
+    expect(after.data.transactions).toEqual(before.data.transactions);
+    expect(after.settings.changesSinceBackup).toBe(before.settings.changesSinceBackup);
+  });
+
+  it('does nothing if that Transaction is already gone', async () => {
+    const { ledger } = await ledgerWithOneTransaction();
+    const before = await ledger.load();
+
+    await ledger.undoAddTransaction('does-not-exist');
+
+    expect((await ledger.load()).settings.changesSinceBackup).toBe(before.settings.changesSinceBackup);
+  });
+});

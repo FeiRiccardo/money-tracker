@@ -56,7 +56,7 @@ test.describe('search, filter and sort', () => {
 
     await expect(page.getByTestId('result-count')).toHaveText('1 Transaction');
     await expect(page.getByTestId('result-net')).toContainText('4.50');
-    expect(await rowTitles(page)).toEqual(['Caffè al bar']);
+    await expect.poll(() => rowTitles(page)).toEqual(['Caffè al bar']);
   });
 
   test('a number finds the exact amount, and no match shows a helpful message', async ({ page }) => {
@@ -64,7 +64,7 @@ test.describe('search, filter and sort', () => {
     await openSearch(page);
 
     await page.getByRole('searchbox', { name: 'Search' }).fill('62,30');
-    expect(await rowTitles(page)).toEqual(['Weekly shop']);
+    await expect.poll(() => rowTitles(page)).toEqual(['Weekly shop']);
 
     await page.getByRole('searchbox', { name: 'Search' }).fill('nothing like this');
     await expect(page.getByText('No Transactions match.')).toBeVisible();
@@ -75,14 +75,14 @@ test.describe('search, filter and sort', () => {
     await openSearch(page);
 
     await page.getByRole('button', { name: 'Income', exact: true }).click();
-    expect(await rowTitles(page)).toEqual(['October pay']);
+    await expect.poll(() => rowTitles(page)).toEqual(['October pay']);
     await page.getByRole('button', { name: 'All', exact: true }).click();
 
     await page.getByRole('button', { name: 'Any Category' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Groceries', exact: true }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Housing', exact: true }).click();
     await page.getByRole('button', { name: 'Done' }).click();
-    expect((await rowTitles(page)).sort()).toEqual(['Rent', 'Weekly shop']);
+    await expect.poll(async () => (await rowTitles(page)).sort()).toEqual(['Rent', 'Weekly shop']);
 
     await page.getByRole('button', { name: 'Clear filters' }).first().click();
     await expect(page.getByTestId('result-count')).toHaveText('4 Transactions');
@@ -93,14 +93,16 @@ test.describe('search, filter and sort', () => {
     await openSearch(page);
 
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('largest');
-    expect((await rowTitles(page))[0]).toBe('October pay');
+    await expect.poll(async () => (await rowTitles(page))[0]).toBe('October pay');
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('smallest');
-    expect((await rowTitles(page))[0]).toBe('Caffè al bar');
+    await expect.poll(async () => (await rowTitles(page))[0]).toBe('Caffè al bar');
+    // The selector shows the new value only once the choice has been saved, so wait for that before reloading.
+    await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveValue('smallest');
 
     await page.reload();
     // The home list uses the same remembered order: flat list (no day headers), smallest first.
     await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveValue('smallest');
-    expect((await rowTitles(page))[0]).toBe('Caffè al bar');
+    await expect.poll(async () => (await rowTitles(page))[0]).toBe('Caffè al bar');
     await expect(page.locator('.day-head')).toHaveCount(0);
 
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('newest');
@@ -124,7 +126,7 @@ test.describe('quick entry', () => {
 
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    expect(await rowTitles(page)).toEqual(['Coffee', 'Coffee']);
+    await expect.poll(() => rowTitles(page)).toEqual(['Coffee', 'Coffee']);
     await expect(page.getByTestId('balance')).toContainText('9.00');
   });
 
@@ -139,7 +141,7 @@ test.describe('quick entry', () => {
     await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    expect(await rowTitles(page)).toEqual(['Coffee', 'Coffee']);
+    await expect.poll(() => rowTitles(page)).toEqual(['Coffee', 'Coffee']);
   });
 
   test('Duplicate never copies a retired label onto the new Transaction', async ({ page }) => {
@@ -174,7 +176,7 @@ test.describe('recurring Transactions', () => {
     await expect(page.locator('.repeat-mark')).toHaveCount(3);
 
     await page.getByRole('button', { name: 'Back', exact: true }).click();
-    await page.getByRole('button', { name: 'Undo' }).click();
+    await page.getByRole('status').filter({ hasText: 'recurring Transactions added' }).getByRole('button', { name: 'Undo' }).click();
     await openSearch(page);
     await expect(page.getByTestId('result-count')).toHaveText('1 Transaction');
   });

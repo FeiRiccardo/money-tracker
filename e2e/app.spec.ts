@@ -83,7 +83,8 @@ test('delete: removes the Transaction at once and Undo brings it back', async ({
   await page.getByRole('button', { name: 'Delete' }).click();
 
   await expect(page.getByRole('button', { name: /Lunch/ })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Undo' }).click();
+  // Toasts stack, so the earlier "Added" toast (which has its own Undo) may still be there.
+  await page.getByRole('status').filter({ hasText: 'Deleted' }).getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByRole('button', { name: /Lunch/ })).toBeVisible();
   await expect(page.getByTestId('balance')).toContainText('8.00');
 });

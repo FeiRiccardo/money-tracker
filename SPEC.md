@@ -152,6 +152,32 @@ Opened by the gear icon; a back arrow returns home. One scrolling screen of grou
 - **Duplicate:** a button in the edit form opens a new add form pre-filled with that Transaction's type, amount, Categories and note, dated today. Nothing is saved until Save. Retired labels are never copied, so if a Transaction had only Retired labels, a Category must be chosen first.
 - **Recent:** in the add form, up to five of the last different Transactions (same type, amount, note and Categories) appear as one-tap chips that fill the form the same way.
 
+### 4.10 Toast messages
+
+Every operation that changes or exports data confirms itself with a short toast, in the chosen language.
+
+| Operation | Message (English) | Undo |
+|---|---|---|
+| Transaction added | "Added · Coffee · €4.50" | removes it (not offered when Repeat was chosen) |
+| Transaction edited | "Updated · Coffee · €6.00" | puts the old values back (not offered when Repeat was chosen) |
+| Transaction deleted | "Deleted · Coffee · €4.50" | restores it |
+| Repeat chosen | "Repeats weekly: Bus pass" (info) | none |
+| Recurring Transactions created | "2 recurring Transactions added" | removes exactly that batch |
+| Recurring rule edited | "Recurring Transaction updated: Bus pass" | none |
+| Recurring rule stopped | "Stopped repeating: Bus pass" | none (a confirmation dialog comes first) |
+| Category created, renamed | "Category “Gym” created", "Category renamed to “Fitness”" | none |
+| Category deleted | "Category “Fitness” deleted" | restores it and its Retired labels |
+| Opening balance saved | "Opening balance saved" | none |
+| Backup exported | "Backup saved. Keep the files somewhere outside the browser." | none |
+| Backup imported | "Backup imported" | restores everything as it was |
+| All data erased | "All data erased" | none (a confirmation dialog comes first) |
+
+- The text of a Transaction message is its note, or its first Category when it has no note, then the amount.
+- **No toast** for changes you can see happen: sort order, month, tabs, filters, language, banner dismissal.
+- **Behaviour:** up to three at once, newest at the bottom. A toast with an Undo, and an error, stays 6 seconds; any other 3 seconds. A fourth toast pushes out the oldest one that has no Undo (if all three have one, the oldest). Holding, hovering or focusing a toast pauses its timer, and its ✕ button dismisses it. They sit above the + button and above a form's Save bar, never over either.
+- **Kinds:** success (✓), info (i) and error (!, red). Success and info are announced politely to screen readers, errors urgently.
+- **Errors:** a failed export is a red toast. A failed write keeps the blocking "Not saved, back up now" dialog, because data is at risk.
+
 ## 5. Monthly summary
 
 - The summary covers the month shown in the header. Months are determined by the Transaction's date.
@@ -225,6 +251,11 @@ Source ticket: *Tech stack*. The owner is one person plus an agent, so the spec 
 17. Duplicate and Recent pre-fill the form with today's date and never copy a Retired label.
 18. A backup with rules has a third file; restoring it brings the rules back with their `next_date`; restoring only the two older files works and leaves no rules.
 19. A database written by the first version opens with all its Transactions and settings intact.
+20. Adding, editing and deleting a Transaction each show their toast with the amount; Undo on an add removes it, on an edit restores the old values, and neither leaves the backup reminder's change count higher than before.
+21. Four quick toasts show only the newest three; a toast under the pointer does not expire until the pointer leaves; the ✕ dismisses one at once.
+22. A plain toast disappears after about 3 seconds and one with an Undo after about 6.
+23. A toast never covers the Save button or the + button, at 320x568, 390x844 and landscape phone sizes.
+24. A failed export shows a red error toast, not a success toast.
 
 ## 11. Open items, assumptions and delegated decisions
 
@@ -243,6 +274,7 @@ Check these before building; each is also recorded in the named ticket.
 - **Back-fill can surprise.** Creating a rule with a first date far in the past creates every occurrence since then straight away (with one Undo). That follows the decision but is easy to do by accident with a wrong date.
 - **Recurring only runs while the app is opened.** There is no background job on a static site.
 - **Tie-breaking uses a `createdAt` field added later.** Transactions recorded before it existed have no value and sort after newer ones on the same date.
+- **Toasts replaced the single toast.** Older code showed one toast at a time, so a new one hid the previous Undo; they now stack (decisions Q1 to Q6 of the toast round, all taken as recommended). Undo for an add or edit is deliberately not offered when Repeat was chosen, because that creates a rule and a batch with their own Undo.
 - **Hosting is left to the owner** (Cloudflare Pages or GitHub Pages).
 - **Italian translations** of the starter Category names and all UI strings are to be written at build time.
 

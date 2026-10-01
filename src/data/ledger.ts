@@ -44,6 +44,8 @@ export interface Ledger {
   /** Deletes and returns a snapshot to pass to `restoreTransaction` for Undo. */
   deleteTransaction(id: string): Promise<Transaction>;
   restoreTransaction(snapshot: Transaction): Promise<void>;
+  /** Undo for an add: removes that Transaction and gives back the change it counted. */
+  undoAddTransaction(id: string): Promise<void>;
   addRule(input: RuleInput): Promise<RecurringRule>;
   updateRule(id: string, input: RuleInput): Promise<RecurringRule>;
   /** Stops the rule. Transactions it already created are kept, without their link to it. */
@@ -211,6 +213,16 @@ export async function openLedger(
       await countChange(tx.objectStore('meta'), 1);
       await tx.done;
       return rule;
+    },
+
+    async undoAddTransaction(id) {
+      const tx = db.transaction(['transactions', 'meta'], 'readwrite');
+      const existing = await tx.objectStore('transactions').get(id);
+      if (existing) {
+        await tx.objectStore('transactions').delete(id);
+        await countChange(tx.objectStore('meta'), -1);
+      }
+      await tx.done;
     },
 
     async createRuleFromTransaction(transactionId, schedule) {

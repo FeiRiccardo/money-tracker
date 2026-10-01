@@ -2,7 +2,20 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { openLedger, type CategoryResult, type Ledger, type RuleInput, type TransactionInput } from '../data/ledger';
 import { BACKUP_DISMISS_MS, INSTALL_DISMISS_MS } from '../domain/reminders';
 import {
+  EMPTY_TOASTS,
+  dismiss,
+  expire,
+  nextExpiry,
+  pause,
+  push,
+  resume,
+  type ToastInput,
+  type ToastItem,
+  type ToastState,
+} from '../domain/toasts';
+import {
   DEFAULT_SETTINGS,
+  type Category,
   type Frequency,
   type Language,
   type LedgerData,
@@ -12,14 +25,8 @@ import {
   type TxType,
 } from '../domain/types';
 import i18n, { categoryName, setLanguage as applyLanguage } from '../i18n';
-import { todayISO } from './format';
+import { formatMoney, todayISO } from './format';
 import { exportFiles, requestPersistence } from './platform';
-
-export interface Toast {
-  message: string;
-  actionLabel?: string;
-  onAction?: () => void;
-}
 
 /** "Repeat" chosen on a Transaction: it becomes the first occurrence of a new rule. */
 export interface Repeat {
@@ -36,9 +43,13 @@ export interface Store {
   rules: RecurringRule[];
   settings: Settings;
   language: Language;
-  toast: Toast | null;
-  showToast: (toast: Toast, ms?: number) => void;
-  dismissToast: () => void;
+  /** Toast messages on screen, oldest first (at most three). */
+  toasts: ToastItem[];
+  notify: (toast: ToastInput) => void;
+  dismissToast: (id: number) => void;
+  /** Hold a toast on screen while it is being touched or hovered. */
+  pauseToast: (id: number) => void;
+  resumeToast: (id: number) => void;
   saveFailed: boolean;
   clearSaveFailed: () => void;
   /** True right after an import: the opening balance is not in the backup, so ask the user to check it. */
@@ -72,9 +83,14 @@ export function useStore(): Store {
 
 const EMPTY: LedgerData = { categories: [], transactions: [] };
 
+/** What a Transaction or rule is called in a message: its note, else its first Category. */
+function labelOf(item: { note: string; categoryIds: string[]; retired: string[] }, categories: Category[]): string {
+  const first = item.categoryIds.map((id) => categories.find((c) => c.id === id)).find(Boolean);
+  return item.note || (first ? categoryName(first) : (item.retired[0] ?? ''));
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
   const ledgerRef = useRef<Ledger | null>(null);
-  const toastTimer = useRef<number | undefined>(undefined);
   const runningRecurring = useRef(false);
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
@@ -82,7 +98,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<LedgerData>(EMPTY);
   const [rules, setRules] = useState<RecurringRule[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [toast, setToast] = useState<Toast | null>(null);
+  const [queue, setQueue] = useState<ToastState>(EMPTY_TOASTS);
   const [saveFailed, setSaveFailed] = useState(false);
   const [openingCheck, setOpeningCheck] = useState(false);
 
@@ -113,16 +129,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
-  const dismissToast = useCallback(() => {
-    window.clearTimeout(toastTimer.current);
-    setToast(null);
-  }, []);
+  // ---- toasts
+  const notify = useCallback((input: ToastInput) => setQueue((q) => push(q, input, Date.now()).state), []);
+  const dismissToast = useCallback((id: number) => setQueue((q) => dismiss(q, id)), []);
+  const pauseToast = useCallback((id: number) => setQueue((q) => pause(q, id, Date.now())), []);
+  const resumeToast = useCallback((id: number) => setQueue((q) => resume(q, id, Date.now())), []);
 
-  const showToast = useCallback((next: Toast, ms = 5000) => {
-    window.clearTimeout(toastTimer.current);
-    setToast(next);
-    toastTimer.current = window.setTimeout(() => setToast(null), ms);
-  }, []);
+  // One timer, set for whichever toast expires next.
+  useEffect(() => {
+    const at = nextExpiry(queue);
+    if (at === null) return;
+    const timer = window.setTimeout(() => setQueue((q) => expire(q, Date.now())), Math.max(0, at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [queue]);
 
   /** Runs a write; any failure becomes the blocking "not saved, back up now" message. */
   const write = useCallback(
@@ -149,17 +168,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (batch.created.length === 0) return;
         await refresh();
         if (!silent) {
-          showToast(
-            {
-              message: i18n.t('recurring.added', { count: batch.created.length }),
-              actionLabel: i18n.t('common.undo'),
-              onAction: () => {
-                dismissToast();
-                void write((l) => l.undoMaterialize(batch));
-              },
-            },
-            8000,
-          );
+          notify({
+            kind: 'success',
+            message: i18n.t('recurring.added', { count: batch.created.length }),
+            actionLabel: i18n.t('common.undo'),
+            onAction: () => void write((l) => l.undoMaterialize(batch)),
+          });
         }
       } catch {
         setSaveFailed(true);
@@ -167,7 +181,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         runningRecurring.current = false;
       }
     },
-    [refresh, showToast, dismissToast, write],
+    [refresh, notify, write],
   );
 
   // Run when the app opens and whenever it comes back to the foreground (a new day may have started).
@@ -189,6 +203,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       await requestPersistence();
       await ledgerRef.current!.updateSettings({ persistRequested: true });
     };
+    const undo = i18n.t('common.undo');
+    const freshCategories = async () => (await ledgerRef.current!.load()).data.categories;
+    const detail = async (tx: { note: string; categoryIds: string[]; retired: string[]; cents: number }) => ({
+      what: labelOf(tx, await freshCategories()),
+      amount: formatMoney(tx.cents, settings.language),
+    });
+    const repeatMessage = async (repeat: Repeat, tx: { note: string; categoryIds: string[]; retired: string[] }) =>
+      i18n.t('toast.repeatSet', {
+        frequency: i18n.t(`recurring.${repeat.frequency}`).toLowerCase(),
+        what: labelOf(tx, await freshCategories()),
+      });
 
     return {
       ready,
@@ -198,9 +223,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       rules,
       settings,
       language: settings.language,
-      toast,
-      showToast,
+      toasts: queue.items,
+      notify,
       dismissToast,
+      pauseToast,
+      resumeToast,
       saveFailed,
       clearSaveFailed: () => setSaveFailed(false),
       openingCheck,
@@ -212,61 +239,86 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (repeat) await l.createRuleFromTransaction(saved.id, repeat);
           return saved;
         });
-        if (result.ok) {
-          await requestPersistenceOnce();
-          if (repeat) await runRecurring();
-          await refresh();
+        if (!result.ok) return false;
+        await requestPersistenceOnce();
+        const saved = result.value;
+        const message = i18n.t('toast.added', await detail(saved));
+        // With Repeat chosen the rule and its batch have their own Undo, so this one has none.
+        if (repeat) {
+          notify({ kind: 'success', message });
+          notify({ kind: 'info', message: await repeatMessage(repeat, saved) });
+          await runRecurring();
+        } else {
+          notify({ kind: 'success', message, actionLabel: undo, onAction: () => void write((l) => l.undoAddTransaction(saved.id)) });
         }
-        return result.ok;
+        await refresh();
+        return true;
       },
       async updateTransaction(id, input, repeat) {
+        const original = data.transactions.find((t) => t.id === id);
         const result = await write(async (l) => {
           await l.updateTransaction(id, input);
           if (repeat) await l.createRuleFromTransaction(id, repeat);
         });
-        if (result.ok && repeat) await runRecurring();
-        return result.ok;
+        if (!result.ok) return false;
+        const message = i18n.t('toast.updated', await detail(input));
+        if (repeat) {
+          notify({ kind: 'success', message });
+          notify({ kind: 'info', message: await repeatMessage(repeat, input) });
+          await runRecurring();
+        } else {
+          notify({
+            kind: 'success',
+            message,
+            ...(original ? { actionLabel: undo, onAction: () => void write((l) => l.restoreTransaction(original)) } : {}),
+          });
+        }
+        return true;
       },
       async deleteTransaction(id) {
         const result = await write((l) => l.deleteTransaction(id));
         if (!result.ok) return;
         const snapshot = result.value;
-        showToast({
-          message: i18n.t('form.deleted'),
-          actionLabel: i18n.t('common.undo'),
-          onAction: () => {
-            dismissToast();
-            void write((l) => l.restoreTransaction(snapshot));
-          },
+        notify({
+          kind: 'success',
+          message: i18n.t('toast.deleted', await detail(snapshot)),
+          actionLabel: undo,
+          onAction: () => void write((l) => l.restoreTransaction(snapshot)),
         });
       },
 
       async updateRule(id, input) {
-        return (await write((l) => l.updateRule(id, input))).ok;
+        const result = await write((l) => l.updateRule(id, input));
+        if (result.ok) notify({ kind: 'success', message: i18n.t('toast.ruleUpdated', { what: labelOf(input, await freshCategories()) }) });
+        return result.ok;
       },
       async stopRule(id) {
-        await write((l) => l.deleteRule(id));
+        const rule = rules.find((r) => r.id === id);
+        const result = await write((l) => l.deleteRule(id));
+        if (result.ok && rule) notify({ kind: 'success', message: i18n.t('toast.ruleStopped', { what: labelOf(rule, await freshCategories()) }) });
       },
 
       async createCategory(type, name) {
         const result = await write((l) => l.createCategory(type, name));
-        return result.ok ? result.value : { ok: false, reason: 'empty' };
+        if (!result.ok) return { ok: false, reason: 'empty' };
+        if (result.value.ok) notify({ kind: 'success', message: i18n.t('toast.categoryCreated', { name: categoryName(result.value.category) }) });
+        return result.value;
       },
       async renameCategory(id, name) {
         const result = await write((l) => l.renameCategory(id, name));
-        return result.ok ? result.value : { ok: false, reason: 'empty' };
+        if (!result.ok) return { ok: false, reason: 'empty' };
+        if (result.value.ok) notify({ kind: 'success', message: i18n.t('toast.categoryRenamed', { name: categoryName(result.value.category) }) });
+        return result.value;
       },
       async deleteCategory(id) {
         const result = await write((l) => l.deleteCategory(id));
         if (!result.ok) return;
         const snapshot = result.value;
-        showToast({
-          message: i18n.t('categories.deleted'),
-          actionLabel: i18n.t('common.undo'),
-          onAction: () => {
-            dismissToast();
-            void write((l) => l.restoreCategory(snapshot));
-          },
+        notify({
+          kind: 'success',
+          message: i18n.t('toast.categoryDeleted', { name: categoryName(snapshot.category) }),
+          actionLabel: undo,
+          onAction: () => void write((l) => l.restoreCategory(snapshot)),
         });
       },
 
@@ -275,7 +327,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await write((l) => l.updateSettings({ language }));
       },
       async setOpeningBalance(cents) {
-        await write((l) => l.updateSettings({ openingCents: cents }));
+        const result = await write((l) => l.updateSettings({ openingCents: cents }));
+        if (result.ok) notify({ kind: 'success', message: i18n.t('toast.openingSaved') });
       },
       async setSortOrder(order) {
         await write((l) => l.updateSettings({ sortOrder: order }));
@@ -293,34 +346,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!result.ok) return;
         await runRecurring(true);
         setOpeningCheck(true);
-        showToast(
-          {
-            message: i18n.t('import.done'),
-            actionLabel: i18n.t('common.undo'),
-            onAction: () => {
-              dismissToast();
-              setOpeningCheck(false);
-              void write(async (l) => {
-                await l.replaceAll(before.data, before.rules);
-                await l.updateSettings(before.settings);
-              });
-            },
+        notify({
+          kind: 'success',
+          message: i18n.t('import.done'),
+          actionLabel: undo,
+          onAction: () => {
+            setOpeningCheck(false);
+            void write(async (l) => {
+              await l.replaceAll(before.data, before.rules);
+              await l.updateSettings(before.settings);
+            });
           },
-          10000,
-        );
+        });
       },
 
       async eraseAll() {
         const result = await write((l) => l.eraseAll());
-        if (result.ok) applyLanguage('en');
+        if (!result.ok) return;
+        applyLanguage('en');
+        notify({ kind: 'success', message: i18n.t('toast.erased') });
       },
 
       async exportBackup() {
-        const shared = await exportFiles(data, rules, i18n.t('export.shareTitle'));
-        if (!shared) return false;
-        await write((l) => l.updateSettings({ lastBackupAt: Date.now(), changesSinceBackup: 0 }));
-        showToast({ message: i18n.t('export.done') });
-        return true;
+        try {
+          const shared = await exportFiles(data, rules, i18n.t('export.shareTitle'));
+          if (!shared) return false;
+          await write((l) => l.updateSettings({ lastBackupAt: Date.now(), changesSinceBackup: 0 }));
+          notify({ kind: 'success', message: i18n.t('export.done') });
+          return true;
+        } catch {
+          notify({ kind: 'error', message: i18n.t('toast.exportFailed') });
+          return false;
+        }
       },
 
       async dismissBanner(kind) {
@@ -331,7 +388,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await write((l) => l.updateSettings(patch));
       },
     };
-  }, [ready, storageError, waitingForOtherCopy, data, rules, settings, toast, showToast, dismissToast, saveFailed, openingCheck, write, refresh, runRecurring]);
+  }, [ready, storageError, waitingForOtherCopy, data, rules, settings, queue.items, notify, dismissToast, pauseToast, resumeToast, saveFailed, openingCheck, write, refresh, runRecurring]);
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }
