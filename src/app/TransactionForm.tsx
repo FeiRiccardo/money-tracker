@@ -93,6 +93,7 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
         )}
       </div>
 
+      <div className="form-body">
       <label className="amount-box">
         <span className="muted">€</span>
         <input
@@ -167,9 +168,13 @@ export function TransactionForm({ transaction, onClose }: { transaction?: Transa
         </label>
       </div>
 
-      <button className="btn primary wide" disabled={!canSave} onClick={() => void save()}>
-        {editing ? t('form.saveChanges') : t('common.save')}
-      </button>
+      </div>
+
+      <div className="form-foot">
+        <button className="btn primary wide" disabled={!canSave} onClick={() => void save()}>
+          {editing ? t('form.saveChanges') : t('common.save')}
+        </button>
+      </div>
     </div>
   );
 }

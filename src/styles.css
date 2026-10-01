@@ -44,7 +44,8 @@ h2 { font-size: 18px; margin-bottom: 10px; }
 h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 18px 0 6px; font-weight: 600; }
 p { margin: 6px 0; }
 
-.app { position: relative; height: 100%; max-width: 520px; margin: 0 auto; background: var(--bg); overflow: hidden; }
+body { overflow: hidden; }
+.app { position: fixed; top: var(--app-top, 0px); left: 0; right: 0; width: min(100%, 520px); height: var(--app-height, 100dvh); margin: 0 auto; background: var(--bg); overflow: hidden; }
 @media (min-width: 560px) { .app { box-shadow: 0 0 40px rgba(0, 0, 0, 0.12); } }
 .splash { height: 100%; }
 .screen { display: flex; flex-direction: column; height: 100%; padding-top: env(safe-area-inset-top); }
@@ -105,10 +106,13 @@ p { margin: 6px 0; }
 .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; }
 
 /* Forms and dialogs */
-.overlay { position: absolute; inset: 0; z-index: 20; background: var(--bg); padding: calc(16px + env(safe-area-inset-top)) 16px 24px; overflow-y: auto; }
-.form-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.amount-box { display: flex; align-items: baseline; gap: 6px; margin: 18px 0 4px; font-size: 40px; font-weight: 700; }
-.amount-box input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.overlay { position: absolute; inset: 0; z-index: 20; background: var(--bg); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); }
+.form-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 16px 0; flex: none; }
+.form-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 16px; }
+.form-foot { flex: none; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+.form-foot .btn { margin: 0; }
+.amount-box { display: flex; align-items: baseline; gap: 6px; margin: 18px 0 4px; font-size: clamp(28px, 11vw, 40px); font-weight: 700; }
+.amount-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: clamp(28px, 11vw, 40px); font-weight: 700; font-variant-numeric: tabular-nums; }
 .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 18px 0 8px; }
 .hint { text-transform: none; letter-spacing: 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -121,9 +125,20 @@ p { margin: 6px 0; }
 .inline-add input { flex: 1; }
 .error { color: var(--danger); font-size: 14px; margin-top: 8px; }
 .warn { color: var(--expense); font-size: 14px; }
-.row-fields { display: flex; gap: 10px; margin-top: 16px; }
+.row-fields { display: flex; flex-wrap: wrap; gap: 0 10px; margin-top: 16px; }
+.row-fields .field { flex: 1 1 140px; }
 .field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 13px; color: var(--muted); margin-top: 10px; }
-.row-fields .btn.wide, .overlay > .btn.wide { margin-top: 20px; }
+/* Small phones: stack Date and Note; short screens (landscape): tighter spacing. */
+@media (max-width: 380px) { .row-fields .field { flex-basis: 100%; } .chip { padding: 8px 13px; } }
+@media (max-height: 480px) {
+  .amount-box { margin: 8px 0 0; font-size: 28px; }
+  .amount-box input { font-size: 28px; }
+  .label { margin: 10px 0 6px; }
+  .chip { min-height: 36px; padding: 6px 13px; }
+  .row-fields { margin-top: 8px; }
+  .form-foot { padding-top: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  .btn { min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+}
 
 .backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 30; }
 .dialog { position: absolute; z-index: 31; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); max-height: 88%; overflow-y: auto; background: var(--card); border-radius: 18px; padding: 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); }
