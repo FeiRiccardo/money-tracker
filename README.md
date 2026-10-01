@@ -2,6 +2,10 @@
 
 A simple personal money and expense tracker for one person. It runs in the browser as an installable web app (PWA), keeps all data on the device, and backs up through two CSV files.
 
+**Open the app: https://feiriccardo.github.io/money-tracker/**
+
+On a phone, open the link and use "Add to Home Screen" (iOS) or "Install" (Android) so it works like a normal app and the browser does not erase its data.
+
 The product is specified in [`SPEC.md`](SPEC.md); the vocabulary is in [`CONTEXT.md`](CONTEXT.md); the reasoning behind each decision is in [`.wayfinder/`](.wayfinder/map.md).
 
 ## Run it
