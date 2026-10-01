@@ -125,11 +125,11 @@ body { overflow: hidden; }
 .inline-add input { flex: 1; }
 .error { color: var(--danger); font-size: 14px; margin-top: 8px; }
 .warn { color: var(--expense); font-size: 14px; }
-.row-fields { display: flex; flex-wrap: wrap; gap: 0 10px; margin-top: 16px; }
-.row-fields .field { flex: 1 1 140px; }
+/* Date and Note: always two rows, one under the other. */
+.row-fields { display: flex; flex-direction: column; margin-top: 8px; }
 .field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 13px; color: var(--muted); margin-top: 10px; }
-/* Small phones: stack Date and Note; short screens (landscape): tighter spacing. */
-@media (max-width: 380px) { .row-fields .field { flex-basis: 100%; } .chip { padding: 8px 13px; } }
+/* Small phones: slightly tighter chips; short screens (landscape): tighter spacing. */
+@media (max-width: 380px) { .chip { padding: 8px 13px; } }
 @media (max-height: 480px) {
   .amount-box { margin: 8px 0 0; font-size: 28px; }
   .amount-box input { font-size: 28px; }

@@ -67,3 +67,23 @@ test.describe('tablet (768x1024)', () => {
     expect(save!.x).toBeGreaterThan(100);
   });
 });
+
+for (const [name, width, height] of [
+  ['desktop window (1280x800)', 1280, 800],
+  ['tablet (768x1024)', 768, 1024],
+  ['phone (390x844)', 390, 844],
+] as const) {
+  test.describe(`${name}: Date and Note`, () => {
+    test.use({ viewport: { width, height } });
+
+    test('sit in two rows, one under the other, both full width', async ({ page }) => {
+      await openFilledForm(page);
+
+      const date = await page.getByLabel('Date').boundingBox();
+      const note = await page.getByPlaceholder('e.g. Coffee').boundingBox();
+      expect(note!.y).toBeGreaterThanOrEqual(date!.y + date!.height); // Note is below Date
+      expect(Math.abs(note!.x - date!.x)).toBeLessThan(2); // same left edge
+      expect(Math.abs(note!.width - date!.width)).toBeLessThan(2); // same width
+    });
+  });
+}
